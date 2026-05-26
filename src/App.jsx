@@ -1,25 +1,58 @@
 import React, { useState, useEffect } from 'react';
 import { courseData } from './courseData';
-import { calculateDistanceInMeters } from './utils';
+import { calculateDistanceInMeters, calculateBearing } from './utils';
 import { MapContainer, TileLayer, Marker, useMapEvents, Polyline, useMap } from 'react-leaflet';
 import { divIcon, latLngBounds } from 'leaflet';
 import { Navigation, Flag } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet-rotate'; 
 
-function MapCameraTracker({ userLoc, greenLoc }) {
+// FIX 2: Better framing. Uses the Tee Box if GPS hasn't loaded yet.
+function MapCameraTracker({ startLoc, greenLoc }) {
   const map = useMap();
   
   useEffect(() => {
-    if (userLoc && greenLoc) {
+    if (startLoc && greenLoc) {
+      const centerLat = (startLoc.lat + greenLoc.lat) / 2;
+      const centerLng = (startLoc.lng + greenLoc.lng) / 2;
+      
+      const latDiff = Math.abs(startLoc.lat - greenLoc.lat);
+      const lngDiff = Math.abs(startLoc.lng - greenLoc.lng);
+      
+      const latCos = Math.cos(centerLat * (Math.PI / 180));
+      const lngDiffInLatEquivalent = lngDiff * latCos;
+      
+      const distanceInLatEquivalent = Math.sqrt(latDiff * latDiff + lngDiffInLatEquivalent * lngDiffInLatEquivalent);
+
+      const size = map.getSize();
+      const aspectRatio = size.x / size.y;
+      
+      // Calculate a perfect isotropic square bounding box on the globe.
+      // This ensures Leaflet calculates the exact same zoom level regardless of hole rotation.
+      const S = distanceInLatEquivalent * 1.4 * Math.min(1, aspectRatio);
+      const finalS = Math.max(S, distanceInLatEquivalent * 0.6); 
+      const spanLng = finalS / latCos;
+
       const bounds = latLngBounds([
-        [userLoc.lat, userLoc.lng],
-        [greenLoc.lat, greenLoc.lng]
+        [centerLat - finalS / 2, centerLng - spanLng / 2],
+        [centerLat + finalS / 2, centerLng + spanLng / 2]
       ]);
-      map.fitBounds(bounds, { padding: [30, 30] });
-    } else if (greenLoc) {
-      map.setView([greenLoc.lat, greenLoc.lng], 18);
+      // Dynamic scaling gives us natural padding, so we pass 0 here
+      map.fitBounds(bounds, { padding: [0, 0] });
     }
-  }, [map, userLoc, greenLoc]);
+  }, [map, startLoc, greenLoc]);
+
+  return null;
+}
+
+function MapRotationManager({ bearing }) {
+  const map = useMap();
+  
+  useEffect(() => {
+    if (typeof map.setBearing === 'function') {
+      map.setBearing(bearing);
+    }
+  }, [map, bearing]);
 
   return null;
 }
@@ -76,45 +109,38 @@ const createTargetIcon = (distance) => divIcon({
 export default function App() {
   const [currentHoleIndex, setCurrentHoleIndex] = useState(0);
   
-  // 1. LocalStorage Hookup
   const [scores, setScores] = useState(() => {
     const savedScores = localStorage.getItem('myGolfScores');
     return savedScores ? JSON.parse(savedScores) : Array(18).fill(0);
   });
   
-  const [userLocation, setUserLocation] = useState(null);
+  const [gpsLocation, setGpsLocation] = useState(null);
   const [targetPoint, setTargetPoint] = useState(null);
-  const [isTeeView, setIsTeeView] = useState(false);
+  const [isTeeView, setIsTeeView] = useState(true);
   const [showScorecard, setShowScorecard] = useState(false);
 
   const currentHole = courseData[currentHoleIndex] || courseData[0];
 
-  // Save scores automatically
   useEffect(() => {
     localStorage.setItem('myGolfScores', JSON.stringify(scores));
   }, [scores]);
 
-  // GPS & Spoofing
+  // This effect now only handles watching for the real GPS location
+  // when we are in "Live" mode.
   useEffect(() => {
-    if (isTeeView) {
-      setUserLocation({
-        lat: currentHole.teeLocation.lat,
-        lng: currentHole.teeLocation.lng
-      });
-      return;
-    }
+    if (isTeeView) return;
 
     if ("geolocation" in navigator) {
       const watchId = navigator.geolocation.watchPosition(
         (position) => {
-          setUserLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
+          setGpsLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
         },
         (error) => console.error("GPS Error:", error),
         { enableHighAccuracy: true }
       );
       return () => navigator.geolocation.clearWatch(watchId);
     }
-  }, [currentHoleIndex, isTeeView, currentHole.teeLocation]);
+  }, [isTeeView]);
 
   useEffect(() => {
     setTargetPoint(null);
@@ -126,7 +152,6 @@ export default function App() {
     setScores(newScores);
   };
 
-  // Score Summary Math
   const getScoreSummary = () => {
     let totalScore = 0;
     let totalPar = 0;
@@ -148,7 +173,13 @@ export default function App() {
     }
   };
 
-  // Distance Calcs
+  // This is the key change to fix the view "mangling" on hole change.
+  // We derive the location to be displayed directly from the current state and props,
+  // rather than waiting for a `useEffect` to update state.
+  const userLocation = isTeeView ? currentHole.teeLocation : gpsLocation;
+
+  const activeLocation = userLocation || currentHole.teeLocation; // Fallback to tee location if GPS is not yet available in live view
+
   let distanceUserToGreen = null;
   if (userLocation) distanceUserToGreen = calculateDistanceInMeters(userLocation.lat, userLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
   
@@ -158,15 +189,42 @@ export default function App() {
   let distanceTargetToGreen = null;
   if (targetPoint) distanceTargetToGreen = calculateDistanceInMeters(targetPoint.lat, targetPoint.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
 
-  const initialBounds = userLocation 
-    ? [[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]
-    : [[currentHole.greenLocation.lat - 0.001, currentHole.greenLocation.lng - 0.001], [currentHole.greenLocation.lat + 0.001, currentHole.greenLocation.lng + 0.001]];
+  // FIX 1: Add a negative sign (-) to the bearing to counter-spin the plugin correctly
+  let mapBearing = 0;
+  if (activeLocation) {
+    mapBearing = -calculateBearing(activeLocation.lat, activeLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
+  }
+
+  let initialBounds = null;
+  if (activeLocation && currentHole.greenLocation) {
+    const centerLat = (activeLocation.lat + currentHole.greenLocation.lat) / 2;
+    const centerLng = (activeLocation.lng + currentHole.greenLocation.lng) / 2;
+    const latDiff = Math.abs(activeLocation.lat - currentHole.greenLocation.lat);
+    const lngDiff = Math.abs(activeLocation.lng - currentHole.greenLocation.lng);
+    const latCos = Math.cos(centerLat * (Math.PI / 180));
+    const lngDiffInLatEquivalent = lngDiff * latCos;
+    const distanceInLatEquivalent = Math.sqrt(latDiff * latDiff + lngDiffInLatEquivalent * lngDiffInLatEquivalent);
+
+    const heightSpan = distanceInLatEquivalent * 1.3;
+    const widthSpan = distanceInLatEquivalent * 0.6;
+    const widthSpanInLng = widthSpan / latCos;
+
+    initialBounds = [
+      [centerLat - heightSpan / 2, centerLng - widthSpanInLng / 2],
+      [centerLat + heightSpan / 2, centerLng + widthSpanInLng / 2]
+    ];
+  } else {
+    initialBounds = [
+      [activeLocation.lat, activeLocation.lng], 
+      [currentHole.greenLocation.lat, currentHole.greenLocation.lng]
+    ];
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: 'sans-serif', backgroundColor: '#2E7D32' }}>
       
       {/* HEADER */}
-      <header style={{ padding: '10px 15px', backgroundColor: '#2E7D32', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <header style={{ padding: '10px 15px', backgroundColor: '#2E7D32', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 10 }}>
         <h1 style={{ margin: 0, fontSize: '1.2rem' }}>Hole {currentHole.hole} | Par {currentHole.par}</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
           <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 'normal' }}>Total: <strong>{scores.reduce((a, b) => a + b, 0)}</strong></h3>
@@ -180,17 +238,21 @@ export default function App() {
       </header>
 
       {/* MAP AREA */}
-      <main style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+      <main style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        
         <MapContainer 
-          key={`hole-${currentHoleIndex}`}
           bounds={initialBounds}
           doubleClickZoom={false}
           zoomControl={false}
+          rotateControl={false}
           zoomSnap={0}
           maxZoom={22}
-          style={{ flex: 1, width: '100%', zIndex: 0 }}
+          rotate={true} 
+          style={{ flex: 1, width: '100%', height: '100%', zIndex: 0 }}
         >
-          <MapCameraTracker userLoc={userLocation} greenLoc={currentHole.greenLocation} />
+          {/* Tracker now uses activeLocation (Tee or User) to frame the hole smoothly */}
+          <MapCameraTracker startLoc={activeLocation} greenLoc={currentHole.greenLocation} />
+          <MapRotationManager bearing={mapBearing} />
           <MapEvents setTargetPoint={setTargetPoint} />
           
           <TileLayer
@@ -200,9 +262,9 @@ export default function App() {
             maxNativeZoom={18}
           />
           
-          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon(targetPoint ? distanceTargetToGreen : null)} />
-          {userLocation && <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} />}
-          {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={createTargetIcon(distanceUserToTarget)} />}
+          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon(targetPoint ? distanceTargetToGreen : null)} rotateWithView={false} />
+          {userLocation && <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} rotateWithView={false} />}
+          {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={createTargetIcon(distanceUserToTarget)} rotateWithView={false} />}
 
           {/* LINES */}
           {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
@@ -210,17 +272,18 @@ export default function App() {
           {targetPoint && <Polyline positions={[[targetPoint.lat, targetPoint.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
         </MapContainer>
         
-        {/* ICON TOGGLE BUTTON */}
-        <div 
-          onClick={() => setIsTeeView(!isTeeView)}
-          style={{
-            position: 'absolute', top: '15px', left: '15px',
-            backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white',
-            padding: '10px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 2px 4px rgba(0,0,0,0.3)', zIndex: 1000, cursor: 'pointer'
-          }}
-        >
-          {isTeeView ? <Flag size={20} /> : <Navigation size={20} />}
+        {/* ICON TOGGLE BUTTONS */}
+        <div style={{ position: 'absolute', top: '15px', left: '15px', display: 'flex', gap: '10px', zIndex: 1000 }}>
+          <div 
+            onClick={() => setIsTeeView(!isTeeView)}
+            style={{
+              backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white',
+              padding: '10px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.3)', cursor: 'pointer'
+            }}
+          >
+            {isTeeView ? <Flag size={20} /> : <Navigation size={20} />}
+          </div>
         </div>
 
         {/* DISTANCE PILL */}
@@ -235,7 +298,7 @@ export default function App() {
       </main>
 
       {/* FOOTER */}
-      <footer style={{ padding: '12px 15px', backgroundColor: '#2E7D32', color: 'white' }}>
+      <footer style={{ padding: '12px 15px', backgroundColor: '#2E7D32', color: 'white', zIndex: 10 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <button 
             style={{ padding: '8px 16px', fontSize: '0.9rem', borderRadius: '8px', border: 'none', backgroundColor: '#1B5E20', color: 'white', fontWeight: 'bold', cursor: 'pointer' }}

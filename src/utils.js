@@ -12,3 +12,20 @@ export function calculateDistanceInMeters(lat1, lon1, lat2, lon2) {
   
   return Math.round(distance);
 }
+
+// Calculate the compass bearing between two coordinates
+export const calculateBearing = (startLat, startLng, destLat, destLng) => {
+  const toRad = (degree) => degree * (Math.PI / 180);
+  const toDeg = (radian) => radian * (180 / Math.PI);
+
+  const startLatRad = toRad(startLat);
+  const destLatRad = toRad(destLat);
+  const deltaLngRad = toRad(destLng - startLng);
+
+  const y = Math.sin(deltaLngRad) * Math.cos(destLatRad);
+  const x = Math.cos(startLatRad) * Math.sin(destLatRad) -
+            Math.sin(startLatRad) * Math.cos(destLatRad) * Math.cos(deltaLngRad);
+
+  let bearing = toDeg(Math.atan2(y, x));
+  return (bearing + 360) % 360; // Normalize to 0-360 degrees
+};
