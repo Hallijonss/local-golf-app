@@ -1,0 +1,110 @@
+export const courseData = [
+  {
+    hole: 1,
+    par: 4,
+    teeLocation: { lat: 64.16674387651511, lng: -21.732650321501076 },
+    greenLocation: { lat: 64.169710, lng: -21.732501 },
+  },
+  {
+    hole: 2,
+    par: 4, 
+    teeLocation: { lat: 64.169459183287, lng: -21.73175067434159 },
+    greenLocation: { lat: 64.16704107690556, lng: -21.731074822441343 },
+  },
+  {
+    hole: 3,
+    par: 3,
+    teeLocation: { lat: 64.1675100011658, lng: -21.72992618493669 },
+    greenLocation: { lat: 64.16845681182173, lng: -21.730266983578975 },
+  },
+  {
+    hole: 4,
+    par: 3,
+    teeLocation: { lat: 64.17067888852019, lng: -21.73136094833887 },
+    greenLocation: { lat: 64.17214056048904, lng: -21.729873247973483 },
+  },
+  {
+    hole: 5,
+    par: 5,
+    teeLocation: { lat: 64.17256561450444, lng: -21.72982007445655 },
+    greenLocation: { lat: 64.17258721089829, lng: -21.72036635555021 },
+  },
+  {
+    hole: 6,
+    par: 4,
+    teeLocation: { lat: 64.17236052144496, lng: -21.720410756889734 },
+    greenLocation: { lat: 64.17252616171776, lng: -21.725497519951013 },
+  },
+  {
+    hole: 7,
+    par: 3,
+    teeLocation: { lat: 64.17233777602655, lng: -21.726277023843732 },
+    greenLocation: { lat: 64.17235951019556, lng: -21.728471762338504 },
+  },
+  {
+    hole: 8,
+    par: 5,
+    teeLocation: { lat: 64.1723043841108, lng: -21.730517037843025 },
+    greenLocation: { lat: 64.16937524767424, lng: -21.735544152627075 },
+  },
+  {
+    hole: 9,
+    par: 4,
+    teeLocation: { lat: 64.16908301988471, lng: -21.735721302706853 },
+    greenLocation: { lat: 64.16698014818529, lng: -21.733416615754955 },
+  },
+  {
+    hole: 10,
+    par: 4,
+    teeLocation: { lat: 64.16664484294135, lng: -21.734302015739686 },
+    greenLocation: { lat: 64.16886272783361, lng: -21.736809082124342 },
+  },
+  {
+    hole: 11,
+    par: 4,
+    teeLocation: { lat: 64.16858487448133, lng: -21.738197938803932 },
+    greenLocation: { lat: 64.1663364884542, lng: -21.742847142707046 },
+  },
+  {
+    hole: 12,
+    par: 5,
+    teeLocation: { lat: 64.16574186936738, lng: -21.744802209621856 },
+    greenLocation: { lat: 64.16877658104123, lng: -21.750914758339455 },
+  },
+  {
+    hole: 13,
+    par: 5,
+    teeLocation: { lat: 64.16918721461003, lng: -21.750658742643328 },
+    greenLocation: { lat: 64.16825636902195, lng: -21.74223030998525 },
+  },
+  {
+    hole: 14,
+    par: 4,
+    teeLocation: { lat: 64.16773114064438, lng: -21.742111360544055 },
+    greenLocation: { lat: 64.16806502834422, lng: -21.748512783978516 },
+  },
+  {
+    hole: 15,
+    par: 3,
+    teeLocation: { lat: 64.16747053843872, lng: -21.747463245688827 },
+    greenLocation: { lat: 64.16655012346305, lng: -21.74485771391121 },
+  },
+  {
+    hole: 16,
+    par: 4,
+    teeLocation: { lat: 64.16581073566607, lng: -21.743283534407933 },
+    greenLocation: { lat: 64.16346019567622, lng: -21.74453204866856 },
+  },
+  {
+    hole: 17,
+    par: 4,
+    teeLocation: { lat: 64.16299546638739, lng: -21.743920169723943 },
+    greenLocation: { lat: 64.16509799770482, lng: -21.739648828988525 },
+  },
+  {
+    hole: 18,
+    par: 3,
+    teeLocation: { lat: 64.16565200711491, lng: -21.73832193745109 },
+    greenLocation: { lat: 64.16643175350711, lng: -21.736085730683392 },
+  }
+];
