@@ -6,6 +6,7 @@ import { divIcon, latLngBounds } from 'leaflet';
 import { Navigation, Flag } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-rotate'; 
+import easterEggImg from './assets/easter-egg.png';
 
 // --- MAP HELPER COMPONENTS ---
 function MapCameraTracker({ startLoc, greenLoc }) {
@@ -83,11 +84,17 @@ export default function App() {
   const [putts, setPutts] = useState(() => JSON.parse(localStorage.getItem('myPutts')) || Array(18).fill(0));
   const [matchPlay, setMatchPlay] = useState(() => JSON.parse(localStorage.getItem('myMatch')) || Array(18).fill(''));
   
+  // TOGGLE STATES
+  const [trackScore, setTrackScore] = useState(() => {
+    const saved = localStorage.getItem('trackScore');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
   const [trackPutts, setTrackPutts] = useState(() => JSON.parse(localStorage.getItem('trackPutts')) || false);
   const [trackGame, setTrackGame] = useState(() => JSON.parse(localStorage.getItem('trackGame')) || false);
   const [highContrast, setHighContrast] = useState(() => JSON.parse(localStorage.getItem('highContrast')) || false);
+  
   const [matchPlayResult, setMatchPlayResult] = useState('');
-  const [hideEasterEgg, setHideEasterEgg] = useState(false); // NEW STATE
+  const [hideEasterEgg, setHideEasterEgg] = useState(false);
 
   const [gpsLocation, setGpsLocation] = useState(null);
   const [targetPoint, setTargetPoint] = useState(null);
@@ -100,10 +107,11 @@ export default function App() {
     localStorage.setItem('myScores', JSON.stringify(scores));
     localStorage.setItem('myPutts', JSON.stringify(putts));
     localStorage.setItem('myMatch', JSON.stringify(matchPlay));
+    localStorage.setItem('trackScore', JSON.stringify(trackScore));
     localStorage.setItem('trackPutts', JSON.stringify(trackPutts));
     localStorage.setItem('trackGame', JSON.stringify(trackGame));
     localStorage.setItem('highContrast', JSON.stringify(highContrast));
-  }, [scores, putts, matchPlay, trackPutts, trackGame, highContrast]);
+  }, [scores, putts, matchPlay, trackScore, trackPutts, trackGame, highContrast]);
 
   useEffect(() => {
     if (!trackGame) {
@@ -136,6 +144,27 @@ export default function App() {
 
   useEffect(() => { setTargetPoint(null); }, [currentHoleIndex]);
 
+  // Main View Stepper Handlers
+  const adjustScore = (amount) => {
+    const newScores = [...scores];
+    newScores[currentHoleIndex] = Math.max(0, (newScores[currentHoleIndex] || 0) + amount);
+    setScores(newScores);
+  };
+
+  const adjustPutts = (amount) => {
+    const newPutts = [...putts];
+    newPutts[currentHoleIndex] = Math.max(0, (newPutts[currentHoleIndex] || 0) + amount);
+    setPutts(newPutts);
+  };
+
+  // Main View Checkbox Handler
+  const toggleMatchPlay = (teamValue) => {
+    const newMatch = [...matchPlay];
+    newMatch[currentHoleIndex] = newMatch[currentHoleIndex] === teamValue ? '' : teamValue;
+    setMatchPlay(newMatch);
+  };
+
+  // Scorecard Overlay Direct Input Handlers
   const handleScoreChange = (val, index = currentHoleIndex) => {
     const parsed = parseInt(val, 10);
     const newScores = [...scores];
@@ -194,12 +223,13 @@ export default function App() {
   // --- STYLING VARS ---
   const cellStyle = { padding: '10px 4px', borderBottom: '1px solid #ddd', borderRight: '1px solid #ddd', display: 'flex', justifyContent: 'center', alignItems: 'center' };
   const summaryCellStyle = { ...cellStyle, fontWeight: 'bold', background: '#f5f5f5', color: '#2E7D32' };
-  const getGridCols = () => `40px 40px 1fr ${trackPutts ? '1fr' : ''} ${trackGame ? '80px' : ''}`;
+  const getGridCols = () => `40px 40px ${trackScore ? '1fr' : ''} ${trackPutts ? '1fr' : ''} ${trackGame ? '80px' : ''}`;
 
-  const footerInputStyle = { 
-    width: '100%', height: '44px', boxSizing: 'border-box', textAlign: 'center', fontSize: '1.2rem', 
-    border: '1px solid #1B5E20', borderRadius: '0px', backgroundColor: '#C8E6C9', color: '#111', 
-    fontWeight: 'bold', appearance: 'none', margin: 0
+  const stepperBtnStyle = {
+    width: '36px', height: '36px', border: 'none', borderRadius: '6px',
+    backgroundColor: '#1B5E20', color: 'white', fontSize: '1.6rem', 
+    fontWeight: 'bold', cursor: 'pointer', display: 'flex', 
+    alignItems: 'center', justifyContent: 'center', padding: 0
   };
 
   const tableInputStyle = { 
@@ -212,12 +242,16 @@ export default function App() {
     <React.Fragment key={index}>
       <div style={{ ...cellStyle, borderLeft: '1px solid #ddd', fontWeight: 'bold', color: '#333' }}>{holeData.hole}</div>
       <div style={cellStyle}>{holeData.par}</div>
-      <div style={cellStyle}>
-        <input 
-          type="number" inputMode="numeric" pattern="[0-9]*" className="no-spinners"
-          value={scores[index] || ''} onChange={(e) => handleScoreChange(e.target.value, index)} style={tableInputStyle} placeholder="" 
-        />
-      </div>
+      
+      {trackScore && (
+        <div style={cellStyle}>
+          <input 
+            type="number" inputMode="numeric" pattern="[0-9]*" className="no-spinners"
+            value={scores[index] || ''} onChange={(e) => handleScoreChange(e.target.value, index)} style={tableInputStyle} placeholder="" 
+          />
+        </div>
+      )}
+      
       {trackPutts && (
         <div style={cellStyle}>
           <input 
@@ -226,6 +260,7 @@ export default function App() {
           />
         </div>
       )}
+      
       {trackGame && (
         <div style={cellStyle}>
           <select value={matchPlay[index]} onChange={(e) => updateMatch(e.target.value, index)} style={{ ...tableInputStyle, padding: '0 8px', background: '#fafafa' }}>
@@ -238,6 +273,8 @@ export default function App() {
       )}
     </React.Fragment>
   );
+
+  const showFooter = trackScore || trackPutts || trackGame;
 
   return (
     <div style={{ 
@@ -288,49 +325,83 @@ export default function App() {
           {distanceUserToGreen !== null ? `${distanceUserToGreen}m` : 'Leitar...'}
         </div>
 
-        {/* BOTTOM OVERLAYS: Prev / Next Hole Buttons */}
-        <div style={{ position: 'absolute', bottom: '15px', left: '15px', zIndex: 1000 }}>
+        {/* BOTTOM OVERLAYS: Fyrri / Næsta Buttons floating on map */}
+        <div style={{ position: 'absolute', bottom: showFooter ? '15px' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '15px', zIndex: 1000 }}>
            <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white', padding: '10px 16px', borderRadius: '20px', border: 'none', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.3)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
              Fyrri
            </button>
         </div>
-        <div style={{ position: 'absolute', bottom: '15px', right: '15px', zIndex: 1000 }}>
+        <div style={{ position: 'absolute', bottom: showFooter ? '15px' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', right: '15px', zIndex: 1000 }}>
            <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white', padding: '10px 16px', borderRadius: '20px', border: 'none', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.3)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
              Næsta
            </button>
         </div>
       </main>
 
-      {/* FOOTER */}
-      <footer style={{ padding: '15px 15px calc(env(safe-area-inset-bottom, 15px) + 15px)', backgroundColor: '#2E7D32', color: 'white', zIndex: 10 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-end', gap: '15px' }}>
-          
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
-            <label style={{ fontSize: '0.85rem', marginBottom: '6px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Skor</label>
-            <input type="number" inputMode="numeric" pattern="[0-9]*" className="no-spinners" value={scores[currentHoleIndex] || ''} onChange={(e) => handleScoreChange(e.target.value)} style={{...footerInputStyle, maxWidth: trackPutts || trackGame ? 'none' : '120px'}} placeholder="" />
+      {/* FOOTER - Renders side-by-side inputs on top row, checkboxes below */}
+      {showFooter && (
+        <footer style={{ padding: '15px 10px calc(env(safe-area-inset-bottom, 15px) + 15px)', backgroundColor: '#2E7D32', color: 'white', zIndex: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '15px' }}>
+            
+            {/* Top Row: Score and Putts Side by Side with true minus sign */}
+            <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'center', width: '100%', gap: '10px' }}>
+              {trackScore && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <button onClick={() => adjustScore(-1)} style={stepperBtnStyle}>{"\u2212"}</button>
+                  <span style={{ fontSize: '1.1rem', fontWeight: 'bold', minWidth: '60px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                    {scores[currentHoleIndex] || 0} högg
+                  </span>
+                  <button onClick={() => adjustScore(1)} style={stepperBtnStyle}>+</button>
+                </div>
+              )}
+              
+              {trackPutts && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <button onClick={() => adjustPutts(-1)} style={stepperBtnStyle}>{"\u2212"}</button>
+                  <span style={{ fontSize: '1.1rem', fontWeight: 'bold', minWidth: '60px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                    {putts[currentHoleIndex] || 0} pútt
+                  </span>
+                  <button onClick={() => adjustPutts(1)} style={stepperBtnStyle}>+</button>
+                </div>
+              )}
+            </div>
+
+            {/* Bottom Row: Match Play */}
+            {trackGame && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '15px', fontSize: '1rem', fontWeight: 'bold', width: '100%', marginTop: '5px', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={matchPlay[currentHoleIndex] === 'A'} 
+                    onChange={() => toggleMatchPlay('A')} 
+                    style={{ width: '18px', height: '18px' }} 
+                  /> 
+                  Halli&co
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={matchPlay[currentHoleIndex] === 'B'} 
+                    onChange={() => toggleMatchPlay('B')} 
+                    style={{ width: '18px', height: '18px' }} 
+                  /> 
+                  Hinir
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={matchPlay[currentHoleIndex] === 'H'} 
+                    onChange={() => toggleMatchPlay('H')} 
+                    style={{ width: '18px', height: '18px' }} 
+                  /> 
+                  Féll
+                </label>
+              </div>
+            )}
+
           </div>
-          
-          {trackPutts && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
-              <label style={{ fontSize: '0.85rem', marginBottom: '6px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Pútt</label>
-              <input type="number" inputMode="numeric" pattern="[0-9]*" className="no-spinners" value={putts[currentHoleIndex] || ''} onChange={(e) => handlePuttsChange(e.target.value)} style={footerInputStyle} placeholder="" />
-            </div>
-          )}
-
-          {trackGame && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
-              <label style={{ fontSize: '0.85rem', marginBottom: '6px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Leikur</label>
-              <select value={matchPlay[currentHoleIndex]} onChange={(e) => updateMatch(e.target.value)} style={{ ...footerInputStyle, padding: '0 8px', backgroundColor: '#C8E6C9' }}>
-                <option value=""></option>
-                <option value="A">Halli&co</option>
-                <option value="B">Hinir</option>
-                <option value="H">Féll</option>
-              </select>
-            </div>
-          )}
-
-        </div>
-      </footer>
+        </footer>
+      )}
 
       {/* SCORECARD OVERLAY */}
       {showScorecard && (
@@ -342,6 +413,9 @@ export default function App() {
           </div>
 
           <div style={{ padding: '15px 20px', display: 'flex', flexWrap: 'wrap', gap: '15px', background: '#1B5E20', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold', color: 'white' }}>
+              <input type="checkbox" checked={trackScore} onChange={(e) => setTrackScore(e.target.checked)} style={{ width: '18px', height: '18px' }}/> Telja skor
+            </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold', color: 'white' }}>
               <input type="checkbox" checked={trackPutts} onChange={(e) => setTrackPutts(e.target.checked)} style={{ width: '18px', height: '18px' }}/> Telja pútt
             </label>
@@ -361,7 +435,7 @@ export default function App() {
               <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '0.9rem', backgroundColor: '#f0f0f0', borderBottom: '2px solid #ddd' }}>
                 <strong style={{ ...cellStyle, borderLeft: '1px solid #ddd', borderTop: 'none', color: '#555' }}>H</strong>
                 <strong style={{ ...cellStyle, borderTop: 'none', color: '#555' }}>P</strong>
-                <strong style={{ ...cellStyle, borderTop: 'none', color: '#555' }}>Skor</strong>
+                {trackScore && <strong style={{ ...cellStyle, borderTop: 'none', color: '#555' }}>Skor</strong>}
                 {trackPutts && <strong style={{ ...cellStyle, borderTop: 'none', color: '#555' }}>Pútt</strong>}
                 {trackGame && <strong style={{ ...cellStyle, borderTop: 'none', color: '#555' }}>Leikur</strong>}
               </div>
@@ -374,21 +448,21 @@ export default function App() {
                 {/* OUT (Front 9) */}
                 <div style={{ ...summaryCellStyle, borderLeft: '1px solid #ddd' }}>Út</div>
                 <div style={summaryCellStyle}>{courseData.slice(0, 9).reduce((sum, h) => sum + h.par, 0)}</div>
-                <div style={summaryCellStyle}>{calculateTotal(scores, 0, 9)}</div>
+                {trackScore && <div style={summaryCellStyle}>{calculateTotal(scores, 0, 9)}</div>}
                 {trackPutts && <div style={summaryCellStyle}>{calculateTotal(putts, 0, 9)}</div>}
                 {trackGame && <div style={summaryCellStyle}></div>}
 
                 {/* IN (Back 9) */}
                 <div style={{ ...summaryCellStyle, borderLeft: '1px solid #ddd' }}>Inn</div>
                 <div style={summaryCellStyle}>{courseData.slice(9, 18).reduce((sum, h) => sum + h.par, 0)}</div>
-                <div style={summaryCellStyle}>{calculateTotal(scores, 9, 18)}</div>
+                {trackScore && <div style={summaryCellStyle}>{calculateTotal(scores, 9, 18)}</div>}
                 {trackPutts && <div style={summaryCellStyle}>{calculateTotal(putts, 9, 18)}</div>}
                 {trackGame && <div style={summaryCellStyle}></div>}
 
                 {/* TOTAL (18 Holes) */}
                 <div style={{ ...summaryCellStyle, borderLeft: '1px solid #ddd', backgroundColor: '#e8f5e9', color: '#1B5E20', fontSize: '1.1rem' }}>TOT</div>
                 <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9', color: '#1B5E20', fontSize: '1.1rem' }}>{courseData.reduce((sum, h) => sum + h.par, 0)}</div>
-                <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9', color: '#1B5E20', fontSize: '1.1rem' }}>{calculateTotal(scores, 0, 18)}</div>
+                {trackScore && <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9', color: '#1B5E20', fontSize: '1.1rem' }}>{calculateTotal(scores, 0, 18)}</div>}
                 {trackPutts && <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9', color: '#1B5E20', fontSize: '1.1rem' }}>{calculateTotal(putts, 0, 18)}</div>}
                 {trackGame && <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9' }}></div>}
               </div>
@@ -418,7 +492,7 @@ export default function App() {
           animation: 'fadeIn 0.5s ease'
         }}>
           <img 
-            src="/easter-egg.png" 
+            src={easterEggImg} 
             alt="Easter Egg" 
             style={{ maxWidth: '80%', maxHeight: '60%', borderRadius: '12px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }} 
           />
