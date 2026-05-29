@@ -13,6 +13,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "html2canvas": "^1.4.1",
     "leaflet": "^1.9.4",
     "leaflet-rotate": "^0.2.8",
     "lucide-react": "^1.16.0",

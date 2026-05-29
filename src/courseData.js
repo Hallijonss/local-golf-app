@@ -14,13 +14,13 @@ export const courseData = [
   {
     hole: 3,
     par: 3,
-    teeLocation: { lat: 64.1675100011658, lng: -21.72992618493669 },
+    teeLocation: { lat: 64.16719855952138, lng: -21.730198191254757 },
     greenLocation: { lat: 64.16845681182173, lng: -21.730266983578975 },
   },
   {
     hole: 4,
     par: 3,
-    teeLocation: { lat: 64.17067888852019, lng: -21.73136094833887 },
+    teeLocation: { lat: 64.17099496443879, lng: -21.7308371618048 },
     greenLocation: { lat: 64.17214056048904, lng: -21.729873247973483 },
   },
   {
