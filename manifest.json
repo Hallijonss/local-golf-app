@@ -3,7 +3,7 @@
   "short_name": "Mosgolf",
   "start_url": ".",
   "display": "standalone",
-  "background_color": "#ffffff",
+  "background_color": "#FFFFFF",
   "theme_color": "#095228",
   "icons": [
     {
