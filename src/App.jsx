@@ -22,9 +22,9 @@ const theme = {
   radius: '4px',
   // Redesign tokens — dark-green glass HUD
   ink: '#0a4d2a',
-  panel: 'rgba(8, 49, 28, 0.55)',          // dark green glass over the map
+  panel: 'rgba(9, 26, 21, 0.68)',          // deep cool near-charcoal green (stands off the grass)
   panelText: '#eef3ea',                     // cream
-  hairLight: 'rgba(255, 255, 255, 0.20)',   // hairline on dark glass
+  hairLight: 'rgba(255, 255, 255, 0.22)',   // hairline on dark glass
   accent: '#f0d28c',                        // soft gold for the "plays like" number
   panelShadow: '0 2px 14px rgba(0,0,0,0.28)',
   sans: "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif",
@@ -207,15 +207,14 @@ const MatchToggleBtn = ({ label, value, selected, onClick }) => (
   <div 
     onClick={() => onClick(value)}
     style={{
-      padding: '6px 4px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', 
-      borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.85rem', fontWeight: 'bold',
-      backgroundColor: selected ? theme.darkGreen : 'transparent',
-      color: selected ? '#FFF' : theme.darkGreen,
-      border: `1px solid ${theme.darkGreen}`,
-      boxShadow: selected ? theme.shadow : 'none',
+      padding: '7px 4px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
+      borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 700,
+      backgroundColor: selected ? theme.panelText : 'transparent',
+      color: selected ? theme.ink : theme.panelText,
+      border: `1px solid ${selected ? theme.panelText : theme.hairLight}`,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       flex: 1, textAlign: 'center', boxSizing: 'border-box',
-      transition: 'all 0.15s ease', textTransform: 'uppercase'
+      transition: 'all 0.15s ease', textTransform: 'uppercase', letterSpacing: '0.08em'
     }}
   >
     {label}
@@ -602,7 +601,7 @@ export default function App() {
 
   const stepperBtnStyle = {
     width: '40px', height: '40px', border: 'none', background: 'transparent',
-    color: theme.darkGreen, fontSize: '2.5rem', fontWeight: '300', cursor: 'pointer', 
+    color: theme.panelText, fontSize: '2.5rem', fontWeight: '300', cursor: 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
     outline: 'none', touchAction: 'manipulation'
   };
@@ -859,31 +858,31 @@ export default function App() {
         <div style={{ 
           position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '50%', transform: 'translateX(-50%)', 
           zIndex: 1000, width: '92%', maxWidth: '380px', display: 'flex', flexDirection: 'column',
-          background: theme.frostedWhite, backdropFilter: 'blur(10px)', borderRadius: theme.radius, 
-          boxShadow: theme.shadow, border: theme.glassBorder, overflow: 'hidden'
+          ...cardStyle, borderRadius: theme.radius,
+          overflow: 'hidden'
         }}>
           {(trackScore || trackPutts) && (
-            <div style={{ display: 'flex', flexDirection: 'row', width: '100%', backgroundColor: 'rgba(255,255,255,0.2)' }}>
+            <div style={{ display: 'flex', flexDirection: 'row', width: '100%' }}>
               {trackScore && (
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px' }}>
                   <button onClick={() => adjustScore(-1)} style={stepperBtnStyle}>{"\u2212"}</button>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <span style={{ fontSize: '1.4rem', fontWeight: '900', color: theme.darkGreen, lineHeight: '1' }}>
+                    <span className="num" style={{ fontSize: '1.7rem', fontWeight: 700, color: theme.panelText, lineHeight: '1' }}>
                       {scores[currentHoleIndex] || 0}
                     </span>
-                    <span style={{ fontSize: '0.6rem', fontWeight: 'bold', textTransform: 'uppercase', color: theme.darkGreen, letterSpacing: '1px', marginTop: '2px' }}>Högg</span>
+                    <span style={{ ...microLabel, marginTop: '3px' }}>Högg</span>
                   </div>
                   <button onClick={() => adjustScore(1)} style={stepperBtnStyle}>+</button>
                 </div>
               )}
               {trackPutts && (
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderLeft: trackScore ? theme.glassBorder : 'none' }}>
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderLeft: trackScore ? `1px solid ${theme.hairLight}` : 'none' }}>
                   <button onClick={() => adjustPutts(-1)} style={stepperBtnStyle}>{"\u2212"}</button>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <span style={{ fontSize: '1.4rem', fontWeight: '900', color: theme.darkGreen, lineHeight: '1' }}>
+                    <span className="num" style={{ fontSize: '1.7rem', fontWeight: 700, color: theme.panelText, lineHeight: '1' }}>
                       {putts[currentHoleIndex] || 0}
                     </span>
-                    <span style={{ fontSize: '0.6rem', fontWeight: 'bold', textTransform: 'uppercase', color: theme.darkGreen, letterSpacing: '1px', marginTop: '2px' }}>Pútt</span>
+                    <span style={{ ...microLabel, marginTop: '3px' }}>Pútt</span>
                   </div>
                   <button onClick={() => adjustPutts(1)} style={stepperBtnStyle}>+</button>
                 </div>
@@ -895,8 +894,8 @@ export default function App() {
             <div style={{ 
               display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', 
               width: '100%', padding: '8px', 
-              borderTop: (trackScore || trackPutts) ? theme.glassBorder : 'none', 
-              backgroundColor: 'rgba(255,255,255,0.4)', boxSizing: 'border-box'
+              borderTop: (trackScore || trackPutts) ? `1px solid ${theme.hairLight}` : 'none',
+              boxSizing: 'border-box'
             }}>
               <MatchToggleBtn label="Halli" value="A" selected={matchPlay[currentHoleIndex] === 'A'} onClick={toggleMatchPlay} />
               <MatchToggleBtn label="Hinir" value="B" selected={matchPlay[currentHoleIndex] === 'B'} onClick={toggleMatchPlay} />
