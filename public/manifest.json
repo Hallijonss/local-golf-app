@@ -3,8 +3,8 @@
   "short_name": "Mosgolf",
   "start_url": ".",
   "display": "standalone",
-  "background_color": "#2E7D32",
-  "theme_color": "#2E7D32",
+  "background_color": "#FFFFFF",
+  "theme_color": "#095228",
   "icons": [
     {
       "src": "golfmos.png",

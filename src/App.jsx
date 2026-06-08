@@ -1,39 +1,63 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { courseData } from './courseData';
-import { calculateDistanceInMeters, calculateBearing } from './utils';
-import { MapContainer, TileLayer, Marker, useMapEvents, Polyline, useMap } from 'react-leaflet';
-import { divIcon, latLngBounds } from 'leaflet';
+import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
+import { MapContainer, Marker, useMapEvents, Polyline, useMap, TileLayer } from 'react-leaflet';
+import L from 'leaflet';
+import { divIcon } from 'leaflet';
 import { Navigation, Flag, Crosshair } from 'lucide-react';
 import html2canvas from 'html2canvas';
+
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-rotate'; 
 import easterEggImg from './assets/easter-egg.png';
 
+// --- DESIGN TOKENS ---
+const theme = {
+  darkGreen: '#095228',
+  softWhite: 'rgba(255, 255, 255, 0.95)',
+  frostedWhite: 'rgba(255, 255, 255, 0.85)',
+  glassBorder: '1px solid rgba(9, 82, 40, 0.15)',
+  shadow: '0 4px 12px rgba(0,0,0,0.15)',
+  radius: '4px' 
+};
+
 // --- MAP HELPER COMPONENTS ---
 function MapCameraTracker({ startLoc, greenLoc, centerTrigger, currentHoleIndex, isTeeView }) {
   const map = useMap();
+  
   useEffect(() => {
-    if (startLoc && greenLoc) {
-      const centerLat = (startLoc.lat + greenLoc.lat) / 2;
-      const centerLng = (startLoc.lng + greenLoc.lng) / 2;
-      const latDiff = Math.abs(startLoc.lat - greenLoc.lat);
-      const lngDiff = Math.abs(startLoc.lng - greenLoc.lng);
-      const latCos = Math.cos(centerLat * (Math.PI / 180));
-      const lngDiffInLatEquivalent = lngDiff * latCos;
-      const distanceInLatEquivalent = Math.sqrt(latDiff * latDiff + lngDiffInLatEquivalent * lngDiffInLatEquivalent);
-      const size = map.getSize();
-      const aspectRatio = size.x / size.y;
-      const S = distanceInLatEquivalent * 1.4 * Math.min(1, aspectRatio);
-      const finalS = Math.max(S, distanceInLatEquivalent * 0.6); 
-      const spanLng = finalS / latCos;
-      const bounds = latLngBounds([
-        [centerLat - finalS / 2, centerLng - spanLng / 2],
-        [centerLat + finalS / 2, centerLng + spanLng / 2]
-      ]);
-      map.fitBounds(bounds, { padding: [0, 0] });
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    const updateView = () => {
+      if (!startLoc || !greenLoc) return;
+
+      const mapSize = map.getSize();
+      if (mapSize.y === 0) return;
+
+      const centerRatio = 38 / 62;
+      const centerLat = greenLoc.lat + (startLoc.lat - greenLoc.lat) * centerRatio;
+      const centerLng = greenLoc.lng + (startLoc.lng - greenLoc.lng) * centerRatio;
+
+      const pt1 = L.latLng(startLoc.lat, startLoc.lng);
+      const pt2 = L.latLng(greenLoc.lat, greenLoc.lng);
+      const distanceMeters = pt1.distanceTo(pt2);
+
+      if (distanceMeters > 0) {
+        const targetPixels = mapSize.y * 0.68;
+        const metersPerPixel = distanceMeters / targetPixels;
+        const initialResolution = 156543.03392;
+        const latRad = centerLat * (Math.PI / 180);
+        let targetZoom = Math.log2((initialResolution * Math.cos(latRad)) / metersPerPixel);
+        if (targetZoom > 21) targetZoom = 21;
+        if (targetZoom < 5) targetZoom = 5;
+        map.setView([centerLat, centerLng], targetZoom, { animate: false });
+      }
+    };
+
+    updateView();
+    const timer = setTimeout(() => { map.invalidateSize(); updateView(); }, 500);
+    map.on('resize', updateView);
+    return () => { clearTimeout(timer); map.off('resize', updateView); };
   }, [map, centerTrigger, currentHoleIndex, isTeeView]);
+  
   return null;
 }
 
@@ -41,7 +65,6 @@ function MapRotationManager({ bearing, centerTrigger, currentHoleIndex, isTeeVie
   const map = useMap();
   useEffect(() => {
     if (typeof map.setBearing === 'function') map.setBearing(bearing);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, centerTrigger, currentHoleIndex, isTeeView]);
   return null;
 }
@@ -58,8 +81,8 @@ function MapEvents({ setTargetPoint }) {
 const createGreenIcon = (distanceTargetToGreen) => divIcon({
   className: '', 
   html: `<div style="position: relative; display: flex; align-items: center; justify-content: center;">
-      <div style="background-color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; color: #333;">⚑</div>
-      ${distanceTargetToGreen !== null ? `<div style="position: absolute; left: 28px; background: #222; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.5);">${distanceTargetToGreen}m</div>` : ''}
+      <div style="background-color: ${theme.darkGreen}; width: 24px; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 14px; color: white; border: 2px solid white;">⚑</div>
+      ${distanceTargetToGreen !== null ? `<div style="position: absolute; left: 28px; background: ${theme.softWhite}; color: ${theme.darkGreen}; padding: 4px 8px; border-radius: 4px; border: 1px solid ${theme.darkGreen}; font-size: 12px; font-weight: bold; white-space: nowrap; box-shadow: ${theme.shadow};">${distanceTargetToGreen}m</div>` : ''}
     </div>`,
   iconSize: [24, 24], iconAnchor: [12, 12]
 });
@@ -73,36 +96,36 @@ const userIcon = divIcon({
 const createTargetIcon = (distance) => divIcon({
   className: '',
   html: `<div style="position: relative; display: flex; align-items: center; justify-content: center;">
-      <div style="width: 16px; height: 16px; border: 2px solid white; border-radius: 50%; background: transparent; box-shadow: 0 0 2px rgba(0,0,0,0.5);"></div>
-      <div style="position: absolute; left: 24px; background: #222; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.5);">${distance !== null ? distance + 'm' : 'N/A'}</div>
+      <div style="width: 16px; height: 16px; border: 3px solid white; border-radius: 50%; background: ${theme.darkGreen}; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>
+      <div style="position: absolute; left: 24px; background: ${theme.softWhite}; color: ${theme.darkGreen}; padding: 4px 8px; border-radius: 4px; border: 1px solid ${theme.darkGreen}; font-size: 12px; font-weight: bold; white-space: nowrap; box-shadow: ${theme.shadow};">${distance !== null ? distance + 'm' : 'N/A'}</div>
     </div>`,
   iconSize: [20, 20], iconAnchor: [10, 10]
 });
 
-// --- PHASE 2: SCORECARD HELPER COMPONENTS ---
+// --- SCORECARD HELPER COMPONENTS ---
 const getScoreStyles = (score, par) => {
-  if (!score || score === 0) return { shape: null, textColor: '#111' };
+  if (!score || score === 0) return { shape: null, textColor: theme.darkGreen };
   const diff = score - par;
-  if (diff <= -2) return { shape: 'double-circle', textColor: '#111' };
-  if (diff === -1) return { shape: 'circle', textColor: '#111' };
-  if (diff === 0) return { shape: null, textColor: '#111' };
-  if (diff === 1) return { shape: 'square', textColor: '#111' };
-  if (diff === 2) return { shape: 'double-square', textColor: '#111' };
+  if (diff <= -2) return { shape: 'double-circle', textColor: theme.darkGreen };
+  if (diff === -1) return { shape: 'circle', textColor: theme.darkGreen };
+  if (diff === 0) return { shape: null, textColor: theme.darkGreen };
+  if (diff === 1) return { shape: 'square', textColor: theme.darkGreen };
+  if (diff === 2) return { shape: 'double-square', textColor: theme.darkGreen };
   return { shape: 'red-square', textColor: '#fff' };
 };
 
 const renderScoreShape = (shape) => {
   const base = { width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' };
-  if (shape === 'circle') return <div style={{ ...base, border: '1.5px solid #111', borderRadius: '50%' }} />;
+  if (shape === 'circle') return <div style={{ ...base, border: `1.5px solid ${theme.darkGreen}`, borderRadius: '50%' }} />;
   if (shape === 'double-circle') return (
-    <div style={{ ...base, border: '1.5px solid #111', borderRadius: '50%', padding: '2px', boxSizing: 'border-box' }}>
-      <div style={{ width: '100%', height: '100%', border: '1px solid #111', borderRadius: '50%' }} />
+    <div style={{ ...base, border: `1.5px solid ${theme.darkGreen}`, borderRadius: '50%', padding: '2px', boxSizing: 'border-box' }}>
+      <div style={{ width: '100%', height: '100%', border: `1px solid ${theme.darkGreen}`, borderRadius: '50%' }} />
     </div>
   );
-  if (shape === 'square') return <div style={{ ...base, border: '1.5px solid #111' }} />;
+  if (shape === 'square') return <div style={{ ...base, border: `1.5px solid ${theme.darkGreen}` }} />;
   if (shape === 'double-square') return (
-    <div style={{ ...base, border: '1.5px solid #111', padding: '2px', boxSizing: 'border-box' }}>
-      <div style={{ width: '100%', height: '100%', border: '1px solid #111' }} />
+    <div style={{ ...base, border: `1.5px solid ${theme.darkGreen}`, padding: '2px', boxSizing: 'border-box' }}>
+      <div style={{ width: '100%', height: '100%', border: `1px solid ${theme.darkGreen}` }} />
     </div>
   );
   if (shape === 'red-square') return <div style={{ ...base, backgroundColor: '#d32f2f' }} />;
@@ -113,151 +136,216 @@ const ToggleBtn = ({ label, checked, onChange }) => (
   <div 
     onClick={() => onChange(!checked)} 
     style={{ 
-      padding: '8px 14px', borderRadius: '20px', cursor: 'pointer', fontSize: '0.9rem',
-      backgroundColor: checked ? '#fff' : '#e0e0e0',
-      color: checked ? '#000' : '#666',
-      border: checked ? '2px solid #000' : '1px solid #ccc',
-      fontWeight: checked ? 'bold' : 'normal',
-      boxShadow: checked ? '0 2px 4px rgba(0,0,0,0.2)' : 'none',
-      transition: 'all 0.1s ease'
+      padding: '8px 16px', borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.9rem',
+      backgroundColor: checked ? theme.darkGreen : theme.softWhite,
+      color: checked ? '#fff' : theme.darkGreen,
+      border: `1px solid ${theme.darkGreen}`,
+      fontWeight: 'bold',
+      boxShadow: checked ? theme.shadow : 'none',
+      transition: 'all 0.1s ease',
+      textTransform: 'uppercase', letterSpacing: '0.5px'
     }}
   >
     {label}
   </div>
 );
 
-// New component for the Live View Match Play Toggles
 const MatchToggleBtn = ({ label, value, selected, onClick }) => (
   <div 
     onClick={() => onClick(value)}
     style={{
-      padding: '4px 12px', borderRadius: '10px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold',
-      backgroundColor: selected ? '#4CAF50' : '#1B5E20',
-      color: selected ? '#FFF' : '#C8E6C9',
-      border: selected ? '2px solid #FFF' : '2px solid transparent',
-      boxShadow: selected ? '0 2px 6px rgba(0,0,0,0.4)' : 'none',
+      padding: '6px 4px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', 
+      borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.85rem', fontWeight: 'bold',
+      backgroundColor: selected ? theme.darkGreen : 'transparent',
+      color: selected ? '#FFF' : theme.darkGreen,
+      border: `1px solid ${theme.darkGreen}`,
+      boxShadow: selected ? theme.shadow : 'none',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      minWidth: '60px', textAlign: 'center', boxSizing: 'border-box',
-      transition: 'all 0.15s ease'
+      flex: 1, textAlign: 'center', boxSizing: 'border-box',
+      transition: 'all 0.15s ease', textTransform: 'uppercase'
     }}
   >
     {label}
   </div>
 );
 
+// --- ELEVATION BADGE ---
+// Shows the height difference to the green: ↑/↓ Xm for slopes, ↔ 0m when flat.
+// Renders nothing only while the value is still unknown (null).
+const ElevationBadge = ({ elevationDiff }) => {
+  if (elevationDiff === null) return null;
+  const rounded = Math.round(elevationDiff);
+  const label = rounded === 0
+    ? '↔ 0m'                                        // measured, no elevation change
+    : `${rounded > 0 ? '↑' : '↓'} ${Math.abs(rounded)}m`; // positive = uphill
+
+  return (
+    <div style={{
+      fontSize: '0.75rem', fontWeight: 'bold', color: theme.darkGreen,
+      marginTop: '2px', letterSpacing: '0.5px'
+    }}>
+      {label}
+    </div>
+  );
+};
+
 // --- MAIN APP ---
 export default function App() {
-  const [currentHoleIndex, setCurrentHoleIndex] = useState(0);
+  const [currentHoleIndex, setCurrentHoleIndex] = useState(() => {
+    const savedHole = localStorage.getItem('currentHoleIndex');
+    return savedHole !== null ? parseInt(savedHole, 10) : 0;
+  });
   
   const [scores, setScores] = useState(() => JSON.parse(localStorage.getItem('myScores')) || Array(18).fill(0));
   const [putts, setPutts] = useState(() => JSON.parse(localStorage.getItem('myPutts')) || Array(18).fill(0));
   const [matchPlay, setMatchPlay] = useState(() => JSON.parse(localStorage.getItem('myMatch')) || Array(18).fill(''));
   
-  // TOGGLE STATES
+  const [gbUser, setGbUser] = useState(() => localStorage.getItem('gbUser') || '');
+  const [gbPass, setGbPass] = useState(() => localStorage.getItem('gbPass') || '');
+  const [showLoginModal, setShowLoginModal] = useState(false);
+
   const [trackScore, setTrackScore] = useState(() => {
     const saved = localStorage.getItem('trackScore');
     return saved !== null ? JSON.parse(saved) : true;
   });
   const [trackPutts, setTrackPutts] = useState(() => JSON.parse(localStorage.getItem('trackPutts')) || false);
   const [trackGame, setTrackGame] = useState(() => JSON.parse(localStorage.getItem('trackGame')) || false);
-  const [highContrast, setHighContrast] = useState(() => JSON.parse(localStorage.getItem('highContrast')) || false);
   
   const [matchPlayResult, setMatchPlayResult] = useState('');
   const [hideEasterEgg, setHideEasterEgg] = useState(false);
 
   const [gpsLocation, setGpsLocation] = useState(null);
+  const [gpsError, setGpsError] = useState(false); 
   const [targetPoint, setTargetPoint] = useState(null);
   const [isTeeView, setIsTeeView] = useState(true);
   const [showScorecard, setShowScorecard] = useState(false);
-  const [isExporting, setIsExporting] = useState(false); // Used to swap inputs for divs during screenshot
+  const [isExporting, setIsExporting] = useState(false); 
   
   const [centerTrigger, setCenterTrigger] = useState(0);
-  const [hasInitialGps, setHasInitialGps] = useState(false);
+  const [hasAutoCentered, setHasAutoCentered] = useState(false);
 
-  // Scorecard DOM ref for saving image
+  // --- ELEVATION STATE ---
+  // elevationDiff: greenElevation - (tee or player) elevation
+  // positive = uphill (green is higher), negative = downhill.
+  // Sampled locally from the baked DEM (see utils.getElevation) — no network.
+  const [elevationDiff, setElevationDiff] = useState(null);
+  const gpsRef = useRef(null); // latest GPS pos, so the live timer reads fresh values
+
   const scorecardRef = useRef(null);
+  const videoRef = useRef(null);
+  const loginFormRef = useRef(null);
 
   const currentHole = courseData[currentHoleIndex] || courseData[0];
 
+  // Keep a ref of the latest GPS position so the live-view timer below can
+  // read fresh coordinates without re-running on every GPS tick.
+  useEffect(() => { gpsRef.current = gpsLocation; }, [gpsLocation]);
+
+  // --- TEE-VIEW ELEVATION ---
+  // Tee and green are fixed, so the tee->green difference is instant and exact.
   useEffect(() => {
+    if (!isTeeView) return;
+    const tee = currentHole.teeLocation;
+    const green = currentHole.greenLocation;
+    const teeElev = getElevation(tee.lat, tee.lng);
+    const greenElev = getElevation(green.lat, green.lng);
+    setElevationDiff(teeElev !== null && greenElev !== null ? greenElev - teeElev : null);
+  }, [isTeeView, currentHoleIndex]);
+
+  // --- LIVE-VIEW ELEVATION ---
+  // Player elevation is dynamic. Wait 2s for GPS to settle, then recompute
+  // the player->green difference every 5s from the latest position.
+  useEffect(() => {
+    if (isTeeView) return;
+    setElevationDiff(null); // clear stale value while GPS settles
+
+    const compute = () => {
+      const pos = gpsRef.current;
+      if (!pos) return;
+      const green = currentHole.greenLocation;
+      const playerElev = getElevation(pos.lat, pos.lng);
+      const greenElev = getElevation(green.lat, green.lng);
+      if (playerElev !== null && greenElev !== null) setElevationDiff(greenElev - playerElev);
+    };
+
+    let interval;
+    const settle = setTimeout(() => { compute(); interval = setInterval(compute, 5000); }, 2000);
+    return () => { clearTimeout(settle); clearInterval(interval); };
+  }, [isTeeView, currentHoleIndex]);
+
+  useEffect(() => {
+    localStorage.setItem('currentHoleIndex', currentHoleIndex);
     localStorage.setItem('myScores', JSON.stringify(scores));
     localStorage.setItem('myPutts', JSON.stringify(putts));
     localStorage.setItem('myMatch', JSON.stringify(matchPlay));
     localStorage.setItem('trackScore', JSON.stringify(trackScore));
     localStorage.setItem('trackPutts', JSON.stringify(trackPutts));
     localStorage.setItem('trackGame', JSON.stringify(trackGame));
-    localStorage.setItem('highContrast', JSON.stringify(highContrast));
-  }, [scores, putts, matchPlay, trackScore, trackPutts, trackGame, highContrast]);
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame]);
 
   useEffect(() => {
-    if (!trackGame) {
-      setMatchPlayResult('');
-      return;
-    }
-    
-    let aWins = 0;
-    let bWins = 0;
-    let holesLogged = 0;
-    
+    if (!trackGame) { setMatchPlayResult(''); return; }
+    let aWins = 0, bWins = 0, holesLogged = 0;
     matchPlay.forEach(val => {
       if (val === 'A') aWins++;
       else if (val === 'B') bWins++;
-      
       if (val !== '') holesLogged++;
     });
-    
     const diff = aWins - bWins;
     const absDiff = Math.abs(diff);
-    
     const strokeWord = absDiff === 1 ? 'höggi' : 'höggum';
     const verb = holesLogged === 18 ? 'vann' : 'er að vinna';
-    
-    if (diff > 0) setMatchPlayResult(`Halli&co ${verb} með ${absDiff} ${strokeWord}`);
+    if (diff > 0) setMatchPlayResult(`Halli ${verb} með ${absDiff} ${strokeWord}`);
     else if (diff < 0) setMatchPlayResult(`Hinir ${verb} með ${absDiff} ${strokeWord}`);
     else setMatchPlayResult('Jafntefli');
   }, [matchPlay, trackGame]);
 
   useEffect(() => {
     if (isTeeView) return;
+    setGpsError(false); 
     if ("geolocation" in navigator) {
       const watchId = navigator.geolocation.watchPosition(
-        (position) => setGpsLocation({ lat: position.coords.latitude, lng: position.coords.longitude }),
-        (error) => console.error("GPS Error:", error),
-        { enableHighAccuracy: true }
+        (position) => {
+          setGpsLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
+          setGpsError(false);
+        },
+        (error) => {
+          console.error("GPS Error:", error.message);
+          setGpsError(true);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 } 
       );
       return () => navigator.geolocation.clearWatch(watchId);
+    } else {
+      setGpsError(true);
     }
   }, [isTeeView]);
 
+  useEffect(() => { setHasAutoCentered(false); }, [currentHoleIndex, isTeeView]);
+
   useEffect(() => {
-    if (gpsLocation && !hasInitialGps) {
-      setHasInitialGps(true);
-      setCenterTrigger(c => c + 1);
+    if (!isTeeView && gpsLocation && !hasAutoCentered) {
+      const timer = setTimeout(() => {
+        setCenterTrigger(c => c + 1);
+        setHasAutoCentered(true);
+      }, 1000); 
+      return () => clearTimeout(timer);
     }
-  }, [gpsLocation, hasInitialGps]);
+  }, [gpsLocation, isTeeView, hasAutoCentered]);
 
   useEffect(() => { setTargetPoint(null); }, [currentHoleIndex]);
 
-  // Main View Stepper Handlers
   const adjustScore = (amount) => {
     const newScores = [...scores];
     const currentVal = newScores[currentHoleIndex] || 0;
-    if (currentVal === 0) {
-      newScores[currentHoleIndex] = currentHole.par;
-    } else {
-      newScores[currentHoleIndex] = Math.max(0, currentVal + amount);
-    }
+    newScores[currentHoleIndex] = currentVal === 0 ? currentHole.par : Math.max(0, currentVal + amount);
     setScores(newScores);
   };
 
   const adjustPutts = (amount) => {
     const newPutts = [...putts];
     const currentVal = newPutts[currentHoleIndex] || 0;
-    if (currentVal === 0) {
-      newPutts[currentHoleIndex] = 1;
-    } else {
-      newPutts[currentHoleIndex] = Math.max(0, currentVal + amount);
-    }
+    newPutts[currentHoleIndex] = currentVal === 0 ? 1 : Math.max(0, currentVal + amount);
     setPutts(newPutts);
   };
 
@@ -287,23 +375,17 @@ export default function App() {
     setMatchPlay(newMatch);
   };
 
-  // --- ACTIONS ---
   const saveScorecardImage = () => {
-    setIsExporting(true); // Switch to plain divs for perfect rendering
-    
-    setTimeout(() => { // Give React 150ms to update the DOM
+    setIsExporting(true); 
+    setTimeout(() => { 
       if (scorecardRef.current) {
-        html2canvas(scorecardRef.current, { backgroundColor: '#fff', scale: 2 }).then(canvas => {
+        html2canvas(scorecardRef.current, { backgroundColor: '#f8f9fa', scale: 2 }).then(canvas => {
           const link = document.createElement('a');
-          
-          // Generate today's date in YYYY-MM-DD format
-          const today = new Date();
-          const dateString = today.toISOString().split('T')[0];
-          
+          const dateString = new Date().toISOString().split('T')[0];
           link.download = `Mosgolf_Skorkort_${dateString}.png`;
           link.href = canvas.toDataURL('image/png');
           link.click();
-          setIsExporting(false); // Switch back to inputs
+          setIsExporting(false); 
         }).catch(() => setIsExporting(false));
       } else {
         setIsExporting(false);
@@ -311,8 +393,61 @@ export default function App() {
     }, 150);
   };
 
+  const handleGolfBoxLogin = () => {
+    localStorage.setItem('gbUser', gbUser);
+    localStorage.setItem('gbPass', gbPass);
+    setShowLoginModal(false);
+    openGolfBox();
+  };
+
+  const startPiP = async () => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 800; canvas.height = 450; 
+      const ctx = canvas.getContext('2d');
+      const drawCanvas = () => {
+        ctx.fillStyle = '#111111';
+        ctx.fillRect(0, 0, 800, 450);
+        const cols = 9, rows = 2, cellW = 800 / cols, cellH = 450 / rows;
+        ctx.strokeStyle = '#333'; ctx.lineWidth = 2;
+        for (let i = 0; i < 18; i++) {
+          const col = i % cols, row = Math.floor(i / cols), x = col * cellW, y = row * cellH;
+          ctx.strokeRect(x, y, cellW, cellH);
+          ctx.beginPath(); ctx.moveTo(x, y + 30); ctx.lineTo(x + cellW, y + 30); ctx.stroke();
+          ctx.fillStyle = '#AAAAAA'; ctx.font = '16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(i + 1, x + cellW / 2, y + 15);
+          const scoreVal = scores[i], scoreText = (scoreVal && scoreVal !== 0) ? scoreVal : ''; 
+          ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 80px sans-serif'; 
+          ctx.fillText(scoreText, x + cellW / 2, y + 30 + (cellH - 30) / 2);
+        }
+        ctx.fillStyle = Date.now() % 1000 < 500 ? theme.darkGreen : '#111111';
+        ctx.beginPath(); ctx.arc(785, 435, 6, 0, Math.PI * 2); ctx.fill();
+      };
+      drawCanvas();
+      const intervalId = setInterval(drawCanvas, 500);
+      const stream = canvas.captureStream(30);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        await videoRef.current.requestPictureInPicture();
+        videoRef.current.addEventListener('leavepictureinpicture', () => clearInterval(intervalId), { once: true });
+      }
+    } catch (err) {
+      alert("Gat ekki opnað PiP. Vafrinn þinn gæti lokað á það.");
+    }
+  };
+
   const openGolfBox = () => {
-    window.open('https://www.golfbox.dk/site/my_golfbox/score/whs/newWHSScore.asp?', '_blank');
+    if (!gbUser || !gbPass) { setShowLoginModal(true); return; }
+    if (loginFormRef.current) {
+      const gbWindow = window.open('', 'golfbox_window');
+      if (!gbWindow) { alert("Sprettigluggi lokaður. Vinsamlegast leyfðu sprettiglugga."); return; }
+      loginFormRef.current.target = 'golfbox_window';
+      loginFormRef.current.submit();
+      setTimeout(() => {
+        if (gbWindow && !gbWindow.closed) gbWindow.location.href = 'https://www.golfbox.dk/site/my_golfbox/score/whs/newWHSScore.asp';
+      }, 2000);
+    }
   };
 
   const clearRound = () => {
@@ -321,7 +456,7 @@ export default function App() {
       setPutts(Array(18).fill(0));
       setMatchPlay(Array(18).fill('')); 
       setShowScorecard(false);
-      setCurrentHoleIndex(0);
+      setCurrentHoleIndex(0); 
     }
   };
 
@@ -335,42 +470,43 @@ export default function App() {
   if (activeLocation) mapBearing = -calculateBearing(activeLocation.lat, activeLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
 
   if (activeLocation && currentHole.greenLocation) {
-    const centerLat = (activeLocation.lat + currentHole.greenLocation.lat) / 2;
-    const centerLng = (activeLocation.lng + currentHole.greenLocation.lng) / 2;
-    const latDiff = Math.abs(activeLocation.lat - currentHole.greenLocation.lat);
-    const lngDiff = Math.abs(activeLocation.lng - currentHole.greenLocation.lng);
-    const latCos = Math.cos(centerLat * (Math.PI / 180));
-    const distanceInLatEquivalent = Math.sqrt(latDiff * latDiff + (lngDiff * latCos) * (lngDiff * latCos));
-    const heightSpan = distanceInLatEquivalent * 1.3;
-    const widthSpan = distanceInLatEquivalent * 0.6;
     initialBounds = [
-      [centerLat - heightSpan / 2, centerLng - (widthSpan / latCos) / 2],
-      [centerLat + heightSpan / 2, centerLng + (widthSpan / latCos) / 2]
+      [activeLocation.lat, activeLocation.lng],
+      [currentHole.greenLocation.lat, currentHole.greenLocation.lng]
     ];
   }
 
   const calculateTotal = (arr, start, end) => arr.slice(start, end).reduce((a, b) => a + b, 0);
 
-  // --- SCORECARD STYLING VARS ---
   const SQUARE_CELL_SIZE = '44px';
   const cellStyle = { 
     display: 'flex', justifyContent: 'center', alignItems: 'center', height: SQUARE_CELL_SIZE,
-    borderBottom: '1px solid #000', borderRight: '1px solid #000', boxSizing: 'border-box', position: 'relative'
+    borderBottom: `1px solid ${theme.darkGreen}`, borderRight: `1px solid ${theme.darkGreen}`, boxSizing: 'border-box', position: 'relative',
+    color: theme.darkGreen
   };
-  const summaryCellStyle = { ...cellStyle, fontWeight: 'bold', backgroundColor: '#f0f0f0', color: '#111' };
+  const summaryCellStyle = { ...cellStyle, fontWeight: 'bold', backgroundColor: 'rgba(9, 82, 40, 0.05)', color: theme.darkGreen };
   
   const getGridCols = () => {
-    if (trackGame) {
-      return `40px 40px ${trackScore ? SQUARE_CELL_SIZE : ''} ${trackPutts ? SQUARE_CELL_SIZE : ''} 1fr`;
-    }
-    return `40px 40px ${trackScore ? '1fr' : ''} ${trackPutts ? '1fr' : ''}`;
+    const cols = ['40px', '40px'];
+    if (trackScore) cols.push('1fr');
+    if (trackPutts) cols.push('1fr');
+    if (trackGame) cols.push('75px');
+    return cols.join(' ');
+  };
+
+  const topPillStyle = {
+    position: 'absolute', top: 'max(env(safe-area-inset-top, 15px), 15px)', zIndex: 1000, 
+    background: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, 
+    padding: '0 14px', borderRadius: theme.radius, border: theme.glassBorder, 
+    fontWeight: '900', boxShadow: theme.shadow, fontSize: '0.95rem', textTransform: 'uppercase', 
+    letterSpacing: '1px', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '38px'
   };
 
   const stepperBtnStyle = {
     width: '40px', height: '40px', border: 'none', background: 'transparent',
-    color: 'white', fontSize: '2rem', 
-    fontWeight: 'bold', cursor: 'pointer', display: 'flex', 
-    alignItems: 'center', justifyContent: 'center', padding: 0
+    color: theme.darkGreen, fontSize: '2.5rem', fontWeight: '300', cursor: 'pointer', 
+    display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+    outline: 'none', touchAction: 'manipulation'
   };
 
   const invisibleInputStyle = { 
@@ -382,15 +518,19 @@ export default function App() {
   const renderRow = (holeData, index) => {
     const scoreVal = scores[index] || 0;
     const { shape, textColor } = getScoreStyles(scoreVal, holeData.par);
-
     return (
       <React.Fragment key={index}>
-        {/* Normal Weight for Hole and Par */}
-        <div style={{ ...cellStyle, width: '40px', borderLeft: '1px solid #000', color: '#111', fontWeight: 'normal' }}>{holeData.hole}</div>
-        <div style={{ ...cellStyle, width: '40px', color: '#111', fontWeight: 'normal' }}>{holeData.par}</div>
+        <div 
+          onClick={() => { setCurrentHoleIndex(index); setShowScorecard(false); }}
+          style={{ ...cellStyle, fontWeight: 'bold', cursor: 'pointer', backgroundColor: '#eef3f0' }}
+          title={`Fara á holu ${holeData.hole}`}
+        >
+          {holeData.hole}
+        </div>
+        <div style={{ ...cellStyle, fontWeight: 'normal' }}>{holeData.par}</div>
         
         {trackScore && (
-          <div style={{ ...cellStyle, width: '100%' }}>
+          <div style={{ ...cellStyle }}>
             <div style={{ position: 'absolute', zIndex: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {renderScoreShape(shape)}
             </div>
@@ -409,34 +549,34 @@ export default function App() {
         )}
         
         {trackPutts && (
-          <div style={{ ...cellStyle, width: '100%' }}>
+          <div style={{ ...cellStyle }}>
             {isExporting ? (
-              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#111', fontWeight: 'bold' }}>
+              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.darkGreen, fontWeight: 'bold' }}>
                 {putts[index] || ''}
               </div>
             ) : (
               <input 
                 type="number" inputMode="numeric" className="no-spinners"
                 value={putts[index] || ''} onChange={(e) => handlePuttsChange(e.target.value, index)} 
-                style={{ ...invisibleInputStyle, color: '#111', fontWeight: 'bold' }} 
+                style={{ ...invisibleInputStyle, color: theme.darkGreen, fontWeight: 'bold' }} 
               />
             )}
           </div>
         )}
         
         {trackGame && (
-          <div style={{ ...cellStyle, width: '100%', padding: '0' }}>
+          <div style={{ ...cellStyle, padding: '0' }}>
             {isExporting ? (
-              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#111', fontWeight: 'normal', fontSize: '1rem' }}>
-                {matchPlay[index] === 'A' ? 'Halli&co' : matchPlay[index] === 'B' ? 'Hinir' : matchPlay[index] === 'H' ? 'Féll' : ''}
+              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.darkGreen, fontWeight: 'normal', fontSize: '0.9rem' }}>
+                {matchPlay[index] === 'A' ? 'Halli' : matchPlay[index] === 'B' ? 'Hinir' : matchPlay[index] === 'H' ? 'Féll' : ''}
               </div>
             ) : (
               <select 
                 value={matchPlay[index]} onChange={(e) => updateMatch(e.target.value, index)} 
-                style={{ ...invisibleInputStyle, color: '#111', appearance: 'none', textAlignLast: 'center', fontWeight: 'normal', fontSize: '1rem' }}
+                style={{ ...invisibleInputStyle, color: theme.darkGreen, appearance: 'none', textAlignLast: 'center', fontWeight: 'bold', fontSize: '0.95rem' }}
               >
                 <option value=""></option>
-                <option value="A">Halli&co</option>
+                <option value="A">Halli</option>
                 <option value="B">Hinir</option>
                 <option value="H">Féll</option>
               </select>
@@ -449,47 +589,72 @@ export default function App() {
 
   const showFooter = trackScore || trackPutts || trackGame;
 
-  // New action button styles
   const actionBtnStyle = {
-    flex: 1, padding: '15px 5px', background: '#fff', border: '2px solid #000', borderRadius: '0', 
-    fontWeight: 'bold', fontSize: '1rem', color: '#111', cursor: 'pointer', 
-    textTransform: 'uppercase', letterSpacing: '0.5px'
+    flex: 1, padding: '15px 5px', background: theme.softWhite, border: `2px solid ${theme.darkGreen}`, borderRadius: theme.radius, 
+    fontWeight: 'bold', fontSize: '0.95rem', color: theme.darkGreen, cursor: 'pointer', 
+    textTransform: 'uppercase', letterSpacing: '0.5px', textAlign: 'center', boxShadow: theme.shadow
   };
 
   const clearBtnStyle = {
-    width: '100%', background: '#fff', color: '#d32f2f', padding: '15px', border: '2px solid #000', 
-    borderRadius: '0', fontWeight: 'bold', fontSize: '1.1rem', cursor: 'pointer', 
-    textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
+    width: '100%', background: '#fff', color: '#d32f2f', padding: '15px', border: '2px solid #d32f2f', 
+    borderRadius: theme.radius, fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer', 
+    textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)',
+    boxShadow: theme.shadow
   };
 
   return (
     <div style={{ 
-      display: 'flex', flexDirection: 'column', height: '100dvh', fontFamily: 'sans-serif', backgroundColor: '#2E7D32',
-      filter: highContrast ? 'contrast(140%) saturate(150%)' : 'none', transition: 'filter 0.3s ease'
+      display: 'flex', flexDirection: 'column', height: '100dvh', width: '100vw', 
+      fontFamily: '"Helvetica Neue", Helvetica, sans-serif', backgroundColor: '#e2e8e4',
+      position: 'relative', overflow: 'hidden'
     }}>
       <style>{`
         .no-spinners::-webkit-inner-spin-button, 
         .no-spinners::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         .no-spinners { -moz-appearance: textfield; }
+        .punchy-map-tiles { filter: contrast(1.05) saturate(1.2) brightness(1.0); }
       `}</style>
+      
+      <video ref={videoRef} muted playsInline style={{ display: 'none' }} />
+      <form ref={loginFormRef} method="POST" action="https://www.golfbox.dk/login.asp?lcid=1039" style={{ display: 'none' }}>
+        <input type="hidden" name="loginform.submitted" value="true" />
+        <input type="hidden" name="command" value="login" />
+        <input type="hidden" name="loginform.username" value={gbUser} />
+        <input type="hidden" name="loginform.password" value={gbPass} />
+        <input type="hidden" name="loginform.submit" value="LOGIN" />
+      </form>
 
-      {/* HEADER */}
-      <header style={{ padding: 'max(env(safe-area-inset-top), 15px) 15px 15px', backgroundColor: '#2E7D32', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 10 }}>
-        <h1 style={{ margin: 0, fontSize: '1.2rem' }}>Hola {currentHole.hole} | Par {currentHole.par}</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-          <button onClick={() => setShowScorecard(true)} style={{ background: '#1B5E20', color: 'white', padding: '8px 12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
-            Skorkort
-          </button>
+      {/* LOGIN MODAL OVERLAY */}
+      {showLoginModal && (
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 100000, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ background: theme.softWhite, padding: '30px', borderRadius: theme.radius, width: '90%', maxWidth: '400px', textAlign: 'center', border: `1px solid ${theme.darkGreen}` }}>
+            <h3 style={{ marginTop: 0, color: theme.darkGreen, fontSize: '1.4rem', textTransform: 'uppercase' }}>Tengja við GolfBox</h3>
+            <p style={{ fontSize: '0.9rem', color: '#555', marginBottom: '20px' }}>Skráðu þig inn til að opna GolfBox í sér glugga á meðan skorkortið er opið í PiP.</p>
+            <input type="text" placeholder="Notendanafn" value={gbUser} onChange={(e) => setGbUser(e.target.value)} style={{ width: '100%', padding: '12px', marginBottom: '15px', borderRadius: theme.radius, border: '1px solid #ccc', fontSize: '1rem', boxSizing: 'border-box' }} />
+            <input type="password" placeholder="Lykilorð" value={gbPass} onChange={(e) => setGbPass(e.target.value)} style={{ width: '100%', padding: '12px', marginBottom: '25px', borderRadius: theme.radius, border: '1px solid #ccc', fontSize: '1rem', boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button onClick={() => setShowLoginModal(false)} style={{ flex: 1, padding: '12px', background: 'transparent', color: theme.darkGreen, border: `1px solid ${theme.darkGreen}`, borderRadius: theme.radius, fontSize: '1rem', fontWeight: 'bold', cursor: 'pointer', textTransform: 'uppercase' }}>Hætta við</button>
+              <button onClick={handleGolfBoxLogin} style={{ flex: 1, padding: '12px', background: theme.darkGreen, color: '#fff', border: 'none', borderRadius: theme.radius, fontSize: '1rem', fontWeight: 'bold', cursor: 'pointer', textTransform: 'uppercase' }}>Vista & Skrá</button>
+            </div>
+          </div>
         </div>
-      </header>
+      )}
 
-      {/* MAP AREA */}
-      <main style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <MapContainer bounds={initialBounds} doubleClickZoom={false} zoomControl={false} rotateControl={false} zoomSnap={0} maxZoom={22} rotate={true} style={{ flex: 1, width: '100%', height: '100%', zIndex: 0 }}>
+      {/* FULL-SCREEN MAP WITH LAYER STACKING */}
+      <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
+        <MapContainer bounds={initialBounds} doubleClickZoom={false} zoomControl={false} rotateControl={false} zoomSnap={0} maxZoom={22} rotate={true} style={{ width: '100%', height: '100%' }}>
           <MapCameraTracker startLoc={activeLocation} greenLoc={currentHole.greenLocation} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} />
           <MapRotationManager bearing={mapBearing} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} />
           <MapEvents setTargetPoint={setTargetPoint} />
-          <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" attribution="Tiles &copy; Esri" maxZoom={22} maxNativeZoom={18} />
+
+          <TileLayer
+            url="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}&v=2"
+            attribution="&copy; Google"
+            maxZoom={22}
+            maxNativeZoom={21}
+            className="punchy-map-tiles"
+          />
+
           <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon(targetPoint ? distanceTargetToGreen : null)} rotateWithView={false} />
           {userLocation && <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} rotateWithView={false} />}
           {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={createTargetIcon(distanceUserToTarget)} rotateWithView={false} />}
@@ -497,200 +662,183 @@ export default function App() {
           {userLocation && targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [targetPoint.lat, targetPoint.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
           {targetPoint && <Polyline positions={[[targetPoint.lat, targetPoint.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
         </MapContainer>
-        
-        {/* TOP LEFT: View Toggle & Center Button */}
-        <div style={{ position: 'absolute', top: '15px', left: '15px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1000 }}>
-          <div onClick={() => setIsTeeView(!isTeeView)} style={{ backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white', padding: '10px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.3)', cursor: 'pointer' }}>
-            {isTeeView ? <Flag size={20} /> : <Navigation size={20} />}
+      </div>
+
+      {/* FLOATING TOP BAR - LEFT PILL */}
+      <div style={{ ...topPillStyle, left: '15px' }}>
+        Hola {currentHole.hole} <span style={{opacity: 0.5, margin: '0 6px'}}>|</span> Par {currentHole.par}
+      </div>
+
+      {/* FLOATING TOP BAR - RIGHT PILL */}
+      <button onClick={() => setShowScorecard(true)} style={{ ...topPillStyle, right: '15px', cursor: 'pointer' }}>
+        Skorkort
+      </button>
+
+      {/* FLOATING TOOLS LEFT */}
+      <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 60px)', left: '15px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1000 }}>
+        <div onClick={() => setIsTeeView(!isTeeView)} style={{ backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, padding: '10px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: theme.shadow, border: theme.glassBorder, cursor: 'pointer' }}>
+          {isTeeView ? <Flag size={20} /> : <Navigation size={20} />}
+        </div>
+        {!isTeeView && (
+          <div onClick={() => setCenterTrigger(c => c + 1)} style={{ backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, padding: '10px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: theme.shadow, border: theme.glassBorder, cursor: 'pointer' }}>
+            <Crosshair size={20} />
           </div>
-          {!isTeeView && (
-            <div onClick={() => setCenterTrigger(c => c + 1)} style={{ backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white', padding: '10px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.3)', cursor: 'pointer' }}>
-              <Crosshair size={20} />
-            </div>
-          )}
-        </div>
+        )}
+      </div>
 
-        {/* TOP RIGHT: Distance Pill */}
-        <div style={{ position: 'absolute', top: '15px', right: '15px', backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white', padding: '6px 14px', borderRadius: '20px', fontSize: '1rem', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.3)', zIndex: 1000, pointerEvents: 'none' }}>
-          {distanceUserToGreen !== null ? `${distanceUserToGreen}m` : 'Leitar...'}
+      {/* FLOATING TOOLS RIGHT — DISTANCE + ELEVATION PILL */}
+      <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 60px)', right: '15px', zIndex: 1000 }}>
+        <div style={{ 
+          backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, 
+          padding: '8px 16px', borderRadius: theme.radius, fontWeight: '900', boxShadow: theme.shadow, 
+          border: theme.glassBorder, pointerEvents: 'none', minWidth: '60px', textAlign: 'center',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <span style={{ fontSize: '1.2rem' }}>
+            {distanceUserToGreen !== null ? `${distanceUserToGreen}m` : gpsError ? 'Engin GPS' : 'Leitar...'}
+          </span>
+          {/* Height difference to the green (tee->green in tee view, player->green in live view) */}
+          <ElevationBadge elevationDiff={elevationDiff} />
         </div>
+      </div>
 
-        {/* BOTTOM OVERLAYS: Fyrri / Næsta Buttons floating on map */}
-        <div style={{ position: 'absolute', bottom: showFooter ? '15px' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '15px', zIndex: 1000 }}>
-           <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white', padding: '10px 16px', borderRadius: '20px', border: 'none', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.3)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
-             Fyrri
-           </button>
-        </div>
-        <div style={{ position: 'absolute', bottom: showFooter ? '15px' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', right: '15px', zIndex: 1000 }}>
-           <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ backgroundColor: 'rgba(0, 0, 0, 0.75)', color: 'white', padding: '10px 16px', borderRadius: '20px', border: 'none', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.3)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
-             Næsta
-           </button>
-        </div>
-      </main>
+      {/* MAP CONTROLS - PREV / NEXT */}
+      <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
+        <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, padding: '12px 18px', borderRadius: theme.radius, border: theme.glassBorder, fontWeight: '900', boxShadow: theme.shadow, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+          Fyrri
+        </button>
+      </div>
+      <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', right: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
+        <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, padding: '12px 18px', borderRadius: theme.radius, border: theme.glassBorder, fontWeight: '900', boxShadow: theme.shadow, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+          Næsta
+        </button>
+      </div>
 
-      {/* FOOTER - Main view steppers */}
+      {/* UNIFIED SCORING & LEIKUR FOOTER */}
       {showFooter && (
-        <footer style={{ padding: '8px 10px calc(env(safe-area-inset-bottom, 8px) + 8px)', backgroundColor: '#2E7D32', color: 'white', zIndex: 10 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-            
-            <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'center', width: '100%', gap: '15px' }}>
+        <div style={{ 
+          position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '50%', transform: 'translateX(-50%)', 
+          zIndex: 1000, width: '92%', maxWidth: '380px', display: 'flex', flexDirection: 'column',
+          background: theme.frostedWhite, backdropFilter: 'blur(10px)', borderRadius: theme.radius, 
+          boxShadow: theme.shadow, border: theme.glassBorder, overflow: 'hidden'
+        }}>
+          {(trackScore || trackPutts) && (
+            <div style={{ display: 'flex', flexDirection: 'row', width: '100%', backgroundColor: 'rgba(255,255,255,0.2)' }}>
               {trackScore && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px' }}>
                   <button onClick={() => adjustScore(-1)} style={stepperBtnStyle}>{"\u2212"}</button>
-                  <span style={{ fontSize: '1.2rem', fontWeight: 'bold', minWidth: '70px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                    {scores[currentHoleIndex] || 0} högg
-                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <span style={{ fontSize: '1.4rem', fontWeight: '900', color: theme.darkGreen, lineHeight: '1' }}>
+                      {scores[currentHoleIndex] || 0}
+                    </span>
+                    <span style={{ fontSize: '0.6rem', fontWeight: 'bold', textTransform: 'uppercase', color: theme.darkGreen, letterSpacing: '1px', marginTop: '2px' }}>Högg</span>
+                  </div>
                   <button onClick={() => adjustScore(1)} style={stepperBtnStyle}>+</button>
                 </div>
               )}
-              
               {trackPutts && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderLeft: trackScore ? theme.glassBorder : 'none' }}>
                   <button onClick={() => adjustPutts(-1)} style={stepperBtnStyle}>{"\u2212"}</button>
-                  <span style={{ fontSize: '1.2rem', fontWeight: 'bold', minWidth: '70px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                    {putts[currentHoleIndex] || 0} pútt
-                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <span style={{ fontSize: '1.4rem', fontWeight: '900', color: theme.darkGreen, lineHeight: '1' }}>
+                      {putts[currentHoleIndex] || 0}
+                    </span>
+                    <span style={{ fontSize: '0.6rem', fontWeight: 'bold', textTransform: 'uppercase', color: theme.darkGreen, letterSpacing: '1px', marginTop: '2px' }}>Pútt</span>
+                  </div>
                   <button onClick={() => adjustPutts(1)} style={stepperBtnStyle}>+</button>
                 </div>
               )}
             </div>
+          )}
 
-            {trackGame && (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%', marginTop: '2px', flexWrap: 'wrap' }}>
-                <MatchToggleBtn 
-                  label="Halli&co" 
-                  value="A" 
-                  selected={matchPlay[currentHoleIndex] === 'A'} 
-                  onClick={toggleMatchPlay} 
-                />
-                <MatchToggleBtn 
-                  label="Hinir" 
-                  value="B" 
-                  selected={matchPlay[currentHoleIndex] === 'B'} 
-                  onClick={toggleMatchPlay} 
-                />
-                <MatchToggleBtn 
-                  label="Féll" 
-                  value="H" 
-                  selected={matchPlay[currentHoleIndex] === 'H'} 
-                  onClick={toggleMatchPlay} 
-                />
-              </div>
-            )}
-          </div>
-        </footer>
+          {trackGame && (
+            <div style={{ 
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', 
+              width: '100%', padding: '8px', 
+              borderTop: (trackScore || trackPutts) ? theme.glassBorder : 'none', 
+              backgroundColor: 'rgba(255,255,255,0.4)', boxSizing: 'border-box'
+            }}>
+              <MatchToggleBtn label="Halli" value="A" selected={matchPlay[currentHoleIndex] === 'A'} onClick={toggleMatchPlay} />
+              <MatchToggleBtn label="Hinir" value="B" selected={matchPlay[currentHoleIndex] === 'B'} onClick={toggleMatchPlay} />
+              <MatchToggleBtn label="Féll" value="H" selected={matchPlay[currentHoleIndex] === 'H'} onClick={toggleMatchPlay} />
+            </div>
+          )}
+        </div>
       )}
 
       {/* SCORECARD OVERLAY */}
       {showScorecard && (
-        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#f5f5f5', zIndex: 9999, display: 'flex', flexDirection: 'column', color: '#111' }}>
-          
-          <div style={{ padding: 'max(env(safe-area-inset-top), 15px) 20px 15px', background: '#2E7D32', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-            <h2 style={{ margin: 0, color: 'white' }}>Skorkort</h2>
-            <button onClick={() => setShowScorecard(false)} style={{ background: 'rgba(255,255,255,0.2)', color: 'white', padding: '8px 16px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>Loka</button>
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: '#f5f8f5', zIndex: 9999, display: 'flex', flexDirection: 'column', color: theme.darkGreen }}>
+          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900' }}>Skorkort</h2>
+            <button onClick={() => setShowScorecard(false)} style={{ background: 'transparent', color: 'white', padding: '8px 16px', border: '1px solid white', borderRadius: theme.radius, cursor: 'pointer', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>Loka</button>
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', padding: '15px' }}>
-            
-            {/* Toggles - Styled as pills outside the scorecard */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', justifyContent: 'center', marginBottom: '20px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', justifyContent: 'center', marginBottom: '25px' }}>
               <ToggleBtn label="Skor" checked={trackScore} onChange={setTrackScore} />
               <ToggleBtn label="Pútt" checked={trackPutts} onChange={setTrackPutts} />
               <ToggleBtn label="Leikur" checked={trackGame} onChange={setTrackGame} />
-              <ToggleBtn label="Háskerpa" checked={highContrast} onChange={setHighContrast} />
             </div>
 
-            {/* Classic Printed Scorecard Container WITH REF */}
             <div style={{ display: 'flex', justifyContent: 'center', width: '100%' }}>
-              <div ref={scorecardRef} style={{ background: '#fff', borderRadius: '0', border: '2px solid #000', overflow: 'hidden', marginBottom: '20px', width: '100%' }}>
-                
-                {/* Table Headers */}
-                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '0.9rem', backgroundColor: '#fff', borderBottom: '2px solid #000' }}>
-                  <strong style={{ ...cellStyle, borderLeft: '1px solid #000', borderTop: 'none', color: '#111' }}>H</strong>
-                  <strong style={{ ...cellStyle, borderTop: 'none', color: '#111' }}>P</strong>
-                  {trackScore && <strong style={{ ...cellStyle, borderTop: 'none', color: '#111' }}>SKOR</strong>}
-                  {trackPutts && <strong style={{ ...cellStyle, borderTop: 'none', color: '#111' }}>PÚTT</strong>}
-                  {trackGame && <strong style={{ ...cellStyle, borderTop: 'none', borderRight: '1px solid #000', color: '#111' }}>LEIKUR</strong>}
+              <div ref={scorecardRef} style={{ background: '#fff', borderRadius: '0', border: `2px solid ${theme.darkGreen}`, overflow: 'hidden', marginBottom: '25px', width: '100%', boxShadow: theme.shadow }}>
+                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '0.8rem', backgroundColor: '#eef3f0', borderBottom: `2px solid ${theme.darkGreen}`, color: theme.darkGreen }}>
+                  <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>H</strong>
+                  <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>P</strong>
+                  {trackScore && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>SKOR</strong>}
+                  {trackPutts && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>PÚTT</strong>}
+                  {trackGame && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>LEIKUR</strong>}
                 </div>
-                
-                {/* Holes 1-18 with Mid-Break */}
-                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '1.1rem', backgroundColor: '#fff', color: '#111' }}>
-                  
-                  {/* Front 9 */}
+                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '1.1rem', backgroundColor: '#fff', color: theme.darkGreen }}>
                   {courseData.slice(0, 9).map((hole, i) => renderRow(hole, i))}
-                  
-                  {/* OUT (Front 9 Summary Break) */}
-                  <div style={{ ...summaryCellStyle, borderLeft: '1px solid #000', borderBottom: '2px solid #000' }}>ÚT</div>
-                  <div style={{ ...summaryCellStyle, borderBottom: '2px solid #000' }}>{courseData.slice(0, 9).reduce((sum, h) => sum + h.par, 0)}</div>
-                  {trackScore && <div style={{ ...summaryCellStyle, borderBottom: '2px solid #000' }}>{calculateTotal(scores, 0, 9)}</div>}
-                  {trackPutts && <div style={{ ...summaryCellStyle, borderBottom: '2px solid #000' }}>{calculateTotal(putts, 0, 9)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, borderBottom: '2px solid #000', borderRight: '1px solid #000' }}></div>}
-
-                  {/* Back 9 */}
+                  <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}>ÚT</div>
+                  <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}>{courseData.slice(0, 9).reduce((sum, h) => sum + h.par, 0)}</div>
+                  {trackScore && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}>{calculateTotal(scores, 0, 9)}</div>}
+                  {trackPutts && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}>{calculateTotal(putts, 0, 9)}</div>}
+                  {trackGame && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}></div>}
                   {courseData.slice(9, 18).map((hole, i) => renderRow(hole, i + 9))}
-
-                  {/* IN (Back 9 Summary) */}
-                  <div style={{ ...summaryCellStyle, borderLeft: '1px solid #000' }}>INN</div>
+                  <div style={{ ...summaryCellStyle }}>INN</div>
                   <div style={summaryCellStyle}>{courseData.slice(9, 18).reduce((sum, h) => sum + h.par, 0)}</div>
                   {trackScore && <div style={summaryCellStyle}>{calculateTotal(scores, 9, 18)}</div>}
                   {trackPutts && <div style={summaryCellStyle}>{calculateTotal(putts, 9, 18)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, borderRight: '1px solid #000' }}></div>}
-
-                  {/* TOTAL (18 Holes) */}
-                  <div style={{ ...summaryCellStyle, borderLeft: '1px solid #000', backgroundColor: '#e8f5e9', borderBottom: 'none' }}>TOT</div>
-                  <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9', borderBottom: 'none' }}>{courseData.reduce((sum, h) => sum + h.par, 0)}</div>
-                  {trackScore && <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9', borderBottom: 'none' }}>{calculateTotal(scores, 0, 18)}</div>}
-                  {trackPutts && <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9', borderBottom: 'none' }}>{calculateTotal(putts, 0, 18)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, backgroundColor: '#e8f5e9', borderBottom: 'none', borderRight: '1px solid #000' }}></div>}
+                  {trackGame && <div style={{ ...summaryCellStyle }}></div>}
+                  <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}>TOT</div>
+                  <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}>{courseData.reduce((sum, h) => sum + h.par, 0)}</div>
+                  {trackScore && <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}>{calculateTotal(scores, 0, 18)}</div>}
+                  {trackPutts && <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}>{calculateTotal(putts, 0, 18)}</div>}
+                  {trackGame && <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}></div>}
                 </div>
               </div>
             </div>
 
             {trackGame && matchPlayResult && (
-              <div style={{ padding: '15px', background: '#fff', border: '2px solid #000', borderRadius: '0', marginBottom: '20px', textAlign: 'center', fontWeight: 'bold', fontSize: '1.2rem', color: '#1B5E20' }}>
-                <h3 style={{ margin: '0 0 5px 0', fontSize: '1.1rem', color: '#111', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Niðurstaða leiks</h3>
+              <div style={{ padding: '20px', background: 'transparent', border: `2px solid ${theme.darkGreen}`, borderRadius: theme.radius, marginBottom: '25px', textAlign: 'center', fontWeight: 'bold', fontSize: '1.2rem', color: theme.darkGreen }}>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1rem', color: theme.darkGreen, textTransform: 'uppercase', letterSpacing: '1px' }}>Niðurstaða leiks</h3>
                 {matchPlayResult}
               </div>
             )}
 
-            {/* ACTION BUTTONS ROW */}
-            <div style={{ display: 'flex', gap: '10px', width: '100%', marginBottom: '15px' }}>
-              <button onClick={saveScorecardImage} style={actionBtnStyle}>
-                Vista skorkort
-              </button>
-              <button onClick={openGolfBox} style={{ ...actionBtnStyle, color: '#1B5E20' }}>
-                Skrá skor
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%', marginBottom: '20px' }}>
+              <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
+                <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
+                <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', borderColor: '#4A90E2' }}>Opna í PiP</button>
+              </div>
+              <button onClick={openGolfBox} style={{ ...actionBtnStyle, background: theme.darkGreen, color: '#fff', borderColor: theme.darkGreen, width: '100%', flex: 'none' }}>
+                Skrá skor í GolfBox
               </button>
             </div>
 
-            <button onClick={clearRound} style={clearBtnStyle}>
-              Þurrka út skorkort
-            </button>
+            <button onClick={clearRound} style={clearBtnStyle}>Þurrka út skorkort</button>
           </div>
         </div>
       )}
 
       {/* EASTER EGG */}
       {scores[5] === 7 && !hideEasterEgg && (
-        <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, 
-          backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 99999, 
-          display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center',
-          animation: 'fadeIn 0.5s ease'
-        }}>
-          <img 
-            src={easterEggImg} 
-            alt="Easter Egg" 
-            style={{ maxWidth: '80%', maxHeight: '60%', borderRadius: '12px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }} 
-          />
-          <button 
-            onClick={() => setHideEasterEgg(true)} 
-            style={{ 
-              marginTop: '30px', background: '#2E7D32', color: 'white', 
-              padding: '12px 24px', border: 'none', borderRadius: '8px', 
-              fontSize: '1.2rem', fontWeight: 'bold', cursor: 'pointer' 
-            }}
-          >
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.95)', zIndex: 99999, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+          <img src={easterEggImg} alt="Easter Egg" style={{ maxWidth: '80%', maxHeight: '60%', borderRadius: theme.radius, boxShadow: '0 10px 30px rgba(0,0,0,0.8)', border: '4px solid white' }} />
+          <button onClick={() => setHideEasterEgg(true)} style={{ marginTop: '30px', background: theme.darkGreen, color: 'white', padding: '12px 30px', border: 'none', borderRadius: theme.radius, fontSize: '1.2rem', fontWeight: '900', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '1px' }}>
             Loka
           </button>
         </div>
