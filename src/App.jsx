@@ -20,23 +20,25 @@ const theme = {
   glassBorder: '1px solid rgba(9, 82, 40, 0.15)',
   shadow: '0 4px 12px rgba(0,0,0,0.15)',
   radius: '4px',
-  // Redesign tokens
+  // Redesign tokens — dark-green glass HUD
   ink: '#0a4d2a',
-  card: 'rgba(251, 252, 249, 0.92)',
-  hair: 'rgba(10, 77, 42, 0.16)',
-  panelShadow: '0 2px 14px rgba(0,0,0,0.20)',
+  panel: 'rgba(8, 49, 28, 0.55)',          // dark green glass over the map
+  panelText: '#eef3ea',                     // cream
+  hairLight: 'rgba(255, 255, 255, 0.20)',   // hairline on dark glass
+  accent: '#f0d28c',                        // soft gold for the "plays like" number
+  panelShadow: '0 2px 14px rgba(0,0,0,0.28)',
   sans: "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif",
   num: "'Barlow Condensed', 'Barlow', 'Helvetica Neue', sans-serif",
 };
 
-// Reusable card material + smallcaps label for the redesigned HUD.
+// Reusable glass material + smallcaps label for the HUD.
 const cardStyle = {
-  background: theme.card, backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-  border: `1px solid ${theme.hair}`, boxShadow: theme.panelShadow, color: theme.ink,
+  background: theme.panel, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+  border: `1px solid ${theme.hairLight}`, boxShadow: theme.panelShadow, color: theme.panelText,
 };
 const microLabel = {
-  fontSize: '0.5rem', fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase',
-  opacity: 0.5, fontFamily: theme.sans,
+  fontSize: '0.52rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase',
+  opacity: 0.62, fontFamily: theme.sans,
 };
 
 // --- MAP HELPER COMPONENTS ---
@@ -133,7 +135,7 @@ const createTargetIcon = (distance) => divIcon({
 // Small distance label centred on a green edge point (front/back when aiming).
 const createEdgeLabel = (distance) => divIcon({
   className: '',
-  html: `<div style="display: inline-block; transform: translate(-50%, -50%); background: ${theme.ink}; color: #fff; padding: 1px 5px; border-radius: 3px; font-family: ${theme.num}; font-size: 11px; font-weight: 600; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.4);">${distance}</div>`,
+  html: `<div style="display: inline-block; transform: translate(-50%, -50%); background: rgba(8,49,28,0.40); color: #fff; padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.8); font-family: ${theme.num}; font-size: 12px; font-weight: 600; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.7);">${distance}</div>`,
   iconSize: [0, 0], iconAnchor: [0, 0]
 });
 
@@ -528,10 +530,12 @@ export default function App() {
   // Front/back of green. Computed from the player for the pill, and from the
   // aimed-at waypoint for the floating on-green labels. Hidden beyond 300m.
   const holePoints = greenData[currentHoleIndex] ? greenData[currentHoleIndex].points : null;
-  const pillFB = (userLocation && distanceUserToGreen !== null && distanceUserToGreen <= MAX_FB_DISTANCE)
-    ? frontBackFrom(userLocation, holePoints) : null;
-  const targetFB = (targetPoint && distanceTargetToGreen !== null && distanceTargetToGreen <= MAX_FB_DISTANCE)
-    ? frontBackFrom(targetPoint, holePoints) : null;
+  // Front/back shown as outline chips on the green, measured from the aimed-at
+  // waypoint if one is placed, otherwise from the player. Complex view, <=300m.
+  const fbFrom = targetPoint || userLocation;
+  const fbDist = targetPoint ? distanceTargetToGreen : distanceUserToGreen;
+  const greenFB = (!simpleView && fbFrom && fbDist !== null && fbDist <= MAX_FB_DISTANCE)
+    ? frontBackFrom(fbFrom, holePoints) : null;
 
   // Wind direction relative to the line of play: 0° = tailwind (blows toward green),
   // 180° = headwind. Used to rotate the wind arrow in the play-up map frame.
@@ -592,8 +596,8 @@ export default function App() {
 
   const topPillStyle = {
     position: 'absolute', top: 'max(env(safe-area-inset-top, 15px), 15px)', zIndex: 1000,
-    ...cardStyle, padding: '0 14px', borderRadius: theme.radius,
-    display: 'flex', alignItems: 'center', justifyContent: 'center', height: '40px'
+    ...cardStyle, padding: '0 11px', borderRadius: theme.radius,
+    display: 'flex', alignItems: 'center', justifyContent: 'center', height: '34px'
   };
 
   const stepperBtnStyle = {
@@ -750,10 +754,10 @@ export default function App() {
             className="punchy-map-tiles"
           />
 
-          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon(targetPoint ? distanceTargetToGreen : null)} rotateWithView={false} />
-          {/* Floating front/back labels on the green, measured from the aimed-at waypoint */}
-          {!simpleView && targetFB && <Marker position={[targetFB.frontPt.lat, targetFB.frontPt.lng]} icon={createEdgeLabel(targetFB.front)} rotateWithView={false} />}
-          {!simpleView && targetFB && <Marker position={[targetFB.backPt.lat, targetFB.backPt.lng]} icon={createEdgeLabel(targetFB.back)} rotateWithView={false} />}
+          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon(null)} rotateWithView={false} />
+          {/* Front/back outline chips on the green (from waypoint if aiming, else player) */}
+          {greenFB && <Marker position={[greenFB.frontPt.lat, greenFB.frontPt.lng]} icon={createEdgeLabel(greenFB.front)} rotateWithView={false} />}
+          {greenFB && <Marker position={[greenFB.backPt.lat, greenFB.backPt.lng]} icon={createEdgeLabel(greenFB.back)} rotateWithView={false} />}
           {userLocation && <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} rotateWithView={false} />}
           {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={createTargetIcon(distanceUserToTarget)} rotateWithView={false} />}
           {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
@@ -763,97 +767,89 @@ export default function App() {
       </div>
 
       {/* FLOATING TOP BAR - LEFT PILL */}
-      <div style={{ ...topPillStyle, left: '15px', gap: '9px' }}>
+      <div style={{ ...topPillStyle, left: '15px', gap: '8px' }}>
         <span style={{ ...microLabel }}>Hola</span>
-        <span className="num" style={{ fontSize: '1.45rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.hole}</span>
-        <span style={{ width: '1px', height: '18px', background: theme.hair }} />
+        <span className="num" style={{ fontSize: '1.3rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.hole}</span>
+        <span style={{ width: '1px', height: '16px', background: theme.hairLight }} />
         <span style={{ ...microLabel }}>Par</span>
-        <span className="num" style={{ fontSize: '1.45rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.par}</span>
+        <span className="num" style={{ fontSize: '1.3rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.par}</span>
       </div>
 
       {/* FLOATING TOP BAR - RIGHT PILL */}
       <button onClick={() => setShowScorecard(true)} style={{ ...topPillStyle, right: '15px', cursor: 'pointer' }}>
-        <span style={{ ...microLabel, fontSize: '0.62rem', opacity: 0.85 }}>Skorkort</span>
+        <span style={{ ...microLabel, fontSize: '0.7rem', opacity: 0.9 }}>Skorkort</span>
       </button>
 
       {/* FLOATING TOOLS LEFT */}
       <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 60px)', left: '15px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1000 }}>
-        <div onClick={() => setIsTeeView(!isTeeView)} style={{ ...cardStyle, color: theme.ink, padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+        <div onClick={() => setIsTeeView(!isTeeView)} style={{ ...cardStyle,padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
           {isTeeView ? <Flag size={20} /> : <Navigation size={20} />}
         </div>
         {!isTeeView && (
-          <div onClick={() => setCenterTrigger(c => c + 1)} style={{ ...cardStyle, color: theme.ink, padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+          <div onClick={() => setCenterTrigger(c => c + 1)} style={{ ...cardStyle,padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
             <Crosshair size={20} />
           </div>
         )}
       </div>
 
-      {/* WIND — top-centre compass (complex view) */}
-      {showWind && (
+      {/* CONDITIONS — wind + slope, left edge (complex view) */}
+      {(showWind || showElev) && (
         <div style={{
-          position: 'absolute', top: 'max(env(safe-area-inset-top, 15px), 15px)', left: '50%', transform: 'translateX(-50%)',
-          zIndex: 1000, ...cardStyle, borderRadius: '999px', height: '40px', padding: '0 13px 0 8px',
-          display: 'flex', alignItems: 'center', gap: '7px', pointerEvents: 'none'
+          position: 'absolute', top: '50%', left: '15px', transform: 'translateY(-50%)', zIndex: 1000,
+          ...cardStyle, borderRadius: theme.radius, padding: '9px 10px',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', pointerEvents: 'none'
         }}>
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            width: '24px', height: '24px', borderRadius: '50%', border: `1.5px solid ${theme.ink}`
-          }}>
-            <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '1rem', lineHeight: 1 }}>↑</span>
-          </span>
-          <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 1 }}>{Math.round(wind.speed)}</span>
-          <span style={{ ...microLabel, fontSize: '0.46rem' }}>m/s</span>
+          {showWind && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: '27px', height: '27px', borderRadius: '50%', border: `1.5px solid ${theme.panelText}`
+              }}>
+                <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '1.05rem', lineHeight: 1 }}>↑</span>
+              </span>
+              <span className="num" style={{ fontSize: '1.15rem', fontWeight: 700, lineHeight: 0.9 }}>
+                {Math.round(wind.speed)}<span style={{ ...microLabel, fontSize: '0.4rem' }}>m/s</span>
+              </span>
+            </div>
+          )}
+          {showWind && showElev && <span style={{ width: '78%', height: '1px', background: theme.hairLight }} />}
+          {showElev && (
+            <span className="num" style={{ fontSize: '1.15rem', fontWeight: 700, lineHeight: 0.9 }}>
+              {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'} {Math.abs(elevRounded)}<span style={{ ...microLabel, fontSize: '0.4rem' }}>m</span>
+            </span>
+          )}
         </div>
       )}
 
-      {/* PRIMARY READOUT — right edge, vertically centred */}
+      {/* PRIMARY READOUT — distance + plays-like, top-right */}
       <div style={{
-        position: 'absolute', top: '50%', right: '15px', transform: 'translateY(-50%)', zIndex: 1000, pointerEvents: 'none'
+        position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 50px)', right: '15px', zIndex: 1000,
+        ...cardStyle, borderRadius: theme.radius, padding: '8px 14px', minWidth: '68px',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'none'
       }}>
-        <div style={{
-          ...cardStyle, borderRadius: theme.radius, padding: '11px 16px', minWidth: '78px',
-          display: 'flex', flexDirection: 'column', alignItems: 'center'
-        }}>
-          {/* Back of green */}
-          {!simpleView && pillFB && (
-            <span className="num" style={{ fontSize: '1.05rem', fontWeight: 600, opacity: 0.5, lineHeight: 1 }}>{pillFB.back}</span>
-          )}
-          {/* Centre distance — hero */}
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px' }}>
-            <span className="num" style={{ fontSize: distanceUserToGreen !== null ? '2.7rem' : '1.05rem', fontWeight: 700, lineHeight: 0.85 }}>
-              {distanceUserToGreen !== null ? distanceUserToGreen : gpsError ? 'Engin GPS' : 'Leitar...'}
-            </span>
-            {distanceUserToGreen !== null && <span style={{ ...microLabel, fontSize: '0.52rem' }}>m</span>}
-          </div>
-          {/* Front of green */}
-          {!simpleView && pillFB && (
-            <span className="num" style={{ fontSize: '1.05rem', fontWeight: 600, opacity: 0.5, lineHeight: 1, marginTop: '1px' }}>{pillFB.front}</span>
-          )}
-          {/* Slope */}
-          {showElev && (
-            <span className="num" style={{ fontSize: '0.95rem', fontWeight: 700, lineHeight: 1, marginTop: '4px', opacity: 0.85 }}>
-              {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'} {Math.abs(elevRounded)}<span style={{ ...microLabel, fontSize: '0.42rem' }}>m</span>
-            </span>
-          )}
-          {/* Plays-like */}
-          {showPlaysLike && (
-            <>
-              <span style={{ width: '72%', height: '1px', background: theme.hair, margin: '8px 0 4px' }} />
-              <span style={{ ...microLabel, fontSize: '0.46rem' }}>Spilast</span>
-              <span className="num" style={{ fontSize: '1.6rem', fontWeight: 700, lineHeight: 0.95 }}>{playsLike}</span>
-            </>
-          )}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px' }}>
+          <span className="num" style={{ fontSize: distanceUserToGreen !== null ? '2.6rem' : '1.05rem', fontWeight: 700, lineHeight: 0.82 }}>
+            {distanceUserToGreen !== null ? distanceUserToGreen : gpsError ? 'Engin GPS' : 'Leitar...'}
+          </span>
+          {distanceUserToGreen !== null && <span style={{ ...microLabel, fontSize: '0.5rem' }}>m</span>}
         </div>
+        {showPlaysLike && (
+          <>
+            <span style={{ width: '78%', height: '1px', background: theme.hairLight, margin: '5px 0 3px' }} />
+            <span style={{ ...microLabel, fontSize: '0.46rem' }}>Spilast</span>
+            <span className="num" style={{ fontSize: '1.5rem', fontWeight: 700, lineHeight: 0.92, color: theme.accent }}>{playsLike}</span>
+          </>
+        )}
       </div>
 
       {/* MAP CONTROLS - PREV / NEXT */}
       <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
-        <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ ...cardStyle, color: theme.ink, padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
+        <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ ...cardStyle,padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
           Fyrri
         </button>
       </div>
       <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', right: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
-        <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ ...cardStyle, color: theme.ink, padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
+        <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ ...cardStyle,padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
           Næsta
         </button>
       </div>
