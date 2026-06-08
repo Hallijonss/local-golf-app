@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { courseData } from './courseData';
+import { greenData } from './greenData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
 import { MapContainer, Marker, useMapEvents, Polyline, useMap, TileLayer } from 'react-leaflet';
 import L from 'leaflet';
@@ -70,8 +71,18 @@ function MapRotationManager({ bearing, centerTrigger, currentHoleIndex, isTeeVie
 }
 
 function MapEvents({ setTargetPoint }) {
-  useMapEvents({
-    click(e) { setTargetPoint({ lat: e.latlng.lat, lng: e.latlng.lng }); },
+  const map = useMapEvents({
+    click(e) {
+      setTargetPoint((prev) => {
+        // Tapping (roughly) the same spot again clears the waypoint.
+        if (prev) {
+          const a = map.latLngToContainerPoint(e.latlng);
+          const b = map.latLngToContainerPoint([prev.lat, prev.lng]);
+          if (a.distanceTo(b) < 25) return null;
+        }
+        return { lat: e.latlng.lat, lng: e.latlng.lng };
+      });
+    },
     dblclick() { setTargetPoint(null); }
   });
   return null;
@@ -101,6 +112,29 @@ const createTargetIcon = (distance) => divIcon({
     </div>`,
   iconSize: [20, 20], iconAnchor: [10, 10]
 });
+
+// Small distance label centred on a green edge point (front/back when aiming).
+const createEdgeLabel = (distance) => divIcon({
+  className: '',
+  html: `<div style="display: inline-block; transform: translate(-50%, -50%); background: ${theme.softWhite}; color: ${theme.darkGreen}; padding: 2px 7px; border-radius: 4px; border: 1px solid ${theme.darkGreen}; font-size: 11px; font-weight: bold; white-space: nowrap; box-shadow: ${theme.shadow};">${distance}m</div>`,
+  iconSize: [0, 0], iconAnchor: [0, 0]
+});
+
+// --- FRONT/BACK OF GREEN ---
+// Beyond this distance the green is too far to bother showing front/back.
+const MAX_FB_DISTANCE = 300;
+// Nearest (front) and farthest (back) green-edge point from `from`, plus their
+// distances. Returns null if there's nothing to measure.
+const frontBackFrom = (from, points) => {
+  if (!from || !points || points.length === 0) return null;
+  let frontPt = null, backPt = null, front = Infinity, back = -Infinity;
+  for (const p of points) {
+    const d = calculateDistanceInMeters(from.lat, from.lng, p.lat, p.lng);
+    if (d < front) { front = d; frontPt = p; }
+    if (d > back) { back = d; backPt = p; }
+  }
+  return { frontPt, backPt, front, back };
+};
 
 // --- SCORECARD HELPER COMPONENTS ---
 const getScoreStyles = (score, par) => {
@@ -135,15 +169,15 @@ const renderScoreShape = (shape) => {
 const ToggleBtn = ({ label, checked, onChange }) => (
   <div 
     onClick={() => onChange(!checked)} 
-    style={{ 
-      padding: '8px 16px', borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.9rem',
+    style={{
+      padding: '7px 11px', borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.78rem',
       backgroundColor: checked ? theme.darkGreen : theme.softWhite,
       color: checked ? '#fff' : theme.darkGreen,
       border: `1px solid ${theme.darkGreen}`,
       fontWeight: 'bold',
       boxShadow: checked ? theme.shadow : 'none',
       transition: 'all 0.1s ease',
-      textTransform: 'uppercase', letterSpacing: '0.5px'
+      textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap'
     }}
   >
     {label}
@@ -169,26 +203,6 @@ const MatchToggleBtn = ({ label, value, selected, onClick }) => (
   </div>
 );
 
-// --- ELEVATION BADGE ---
-// Shows the height difference to the green: ↑/↓ Xm for slopes, ↔ 0m when flat.
-// Renders nothing only while the value is still unknown (null).
-const ElevationBadge = ({ elevationDiff }) => {
-  if (elevationDiff === null) return null;
-  const rounded = Math.round(elevationDiff);
-  const label = rounded === 0
-    ? '↔ 0m'                                        // measured, no elevation change
-    : `${rounded > 0 ? '↑' : '↓'} ${Math.abs(rounded)}m`; // positive = uphill
-
-  return (
-    <div style={{
-      fontSize: '0.75rem', fontWeight: 'bold', color: theme.darkGreen,
-      marginTop: '2px', letterSpacing: '0.5px'
-    }}>
-      {label}
-    </div>
-  );
-};
-
 // --- MAIN APP ---
 export default function App() {
   const [currentHoleIndex, setCurrentHoleIndex] = useState(() => {
@@ -210,6 +224,9 @@ export default function App() {
   });
   const [trackPutts, setTrackPutts] = useState(() => JSON.parse(localStorage.getItem('trackPutts')) || false);
   const [trackGame, setTrackGame] = useState(() => JSON.parse(localStorage.getItem('trackGame')) || false);
+
+  // Simple view: map shows only the centre distance (no elevation, wind, F/B).
+  const [simpleView, setSimpleView] = useState(() => JSON.parse(localStorage.getItem('simpleView')) || false);
   
   const [matchPlayResult, setMatchPlayResult] = useState('');
   const [hideEasterEgg, setHideEasterEgg] = useState(false);
@@ -230,6 +247,10 @@ export default function App() {
   // Sampled locally from the baked DEM (see utils.getElevation) — no network.
   const [elevationDiff, setElevationDiff] = useState(null);
   const gpsRef = useRef(null); // latest GPS pos, so the live timer reads fresh values
+
+  // --- WIND STATE (Open-Meteo, free/keyless; the only feature needing network) ---
+  // { speed: m/s, fromDeg: meteorological direction the wind blows FROM } or null.
+  const [wind, setWind] = useState(null);
 
   const scorecardRef = useRef(null);
   const videoRef = useRef(null);
@@ -273,6 +294,23 @@ export default function App() {
     return () => { clearTimeout(settle); clearInterval(interval); };
   }, [isTeeView, currentHoleIndex]);
 
+  // --- WIND FETCH ---
+  // One request for the course (wind is ~uniform over 1.5km); refresh every 10 min.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchWind = async () => {
+      try {
+        const r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=64.1678&longitude=-21.7357&current=wind_speed_10m,wind_direction_10m&wind_speed_unit=ms');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (!cancelled && j.current) setWind({ speed: j.current.wind_speed_10m, fromDeg: j.current.wind_direction_10m });
+      } catch { /* wind is non-critical; ignore failures (e.g. offline) */ }
+    };
+    fetchWind();
+    const id = setInterval(fetchWind, 10 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('currentHoleIndex', currentHoleIndex);
     localStorage.setItem('myScores', JSON.stringify(scores));
@@ -281,7 +319,8 @@ export default function App() {
     localStorage.setItem('trackScore', JSON.stringify(trackScore));
     localStorage.setItem('trackPutts', JSON.stringify(trackPutts));
     localStorage.setItem('trackGame', JSON.stringify(trackGame));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame]);
+    localStorage.setItem('simpleView', JSON.stringify(simpleView));
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, simpleView]);
 
   useEffect(() => {
     if (!trackGame) { setMatchPlayResult(''); return; }
@@ -468,6 +507,46 @@ export default function App() {
   if (userLocation && targetPoint) distanceUserToTarget = calculateDistanceInMeters(userLocation.lat, userLocation.lng, targetPoint.lat, targetPoint.lng);
   if (targetPoint) distanceTargetToGreen = calculateDistanceInMeters(targetPoint.lat, targetPoint.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
   if (activeLocation) mapBearing = -calculateBearing(activeLocation.lat, activeLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
+
+  // Front/back of green. Computed from the player for the pill, and from the
+  // aimed-at waypoint for the floating on-green labels. Hidden beyond 300m.
+  const holePoints = greenData[currentHoleIndex] ? greenData[currentHoleIndex].points : null;
+  const pillFB = (userLocation && distanceUserToGreen !== null && distanceUserToGreen <= MAX_FB_DISTANCE)
+    ? frontBackFrom(userLocation, holePoints) : null;
+  const targetFB = (targetPoint && distanceTargetToGreen !== null && distanceTargetToGreen <= MAX_FB_DISTANCE)
+    ? frontBackFrom(targetPoint, holePoints) : null;
+
+  // Wind direction relative to the line of play: 0° = tailwind (blows toward green),
+  // 180° = headwind. Used to rotate the wind arrow in the play-up map frame.
+  let windRelAngle = null;
+  if (wind && activeLocation) {
+    const holeBearing = calculateBearing(activeLocation.lat, activeLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
+    windRelAngle = ((wind.fromDeg + 180 - holeBearing) % 360 + 360) % 360;
+  }
+
+  // Elevation + wind share one pill (complex view only).
+  const elevRounded = elevationDiff !== null ? Math.round(elevationDiff) : null;
+  const showWind = !simpleView && wind && windRelAngle !== null;
+  const showElev = !simpleView && elevRounded !== null;
+
+  // "Plays like" — the green distance adjusted for slope and the head/tail wind
+  // component. Slope is 1:1 (uphill plays longer). Wind uses only the along-shot
+  // component (crosswind cancels via cosine); a headwind hurts ~2x what a tailwind
+  // helps, scaled by the shot length. Pressure is ignored — the raw distance is
+  // already the Mosfellsbær baseline. Only shown within range (<=300m).
+  let playsLike = null;
+  if (distanceUserToGreen !== null && distanceUserToGreen <= MAX_FB_DISTANCE) {
+    let adj = 0;
+    if (elevationDiff !== null) adj += elevationDiff; // uphill (+) plays longer
+    if (wind && windRelAngle !== null) {
+      const tail = wind.speed * Math.cos(windRelAngle * Math.PI / 180); // + tailwind, - headwind
+      adj += tail >= 0
+        ? -distanceUserToGreen * tail * 0.0075   // tailwind shortens (~0.75%/m·s⁻¹)
+        : -distanceUserToGreen * tail * 0.015;   // headwind lengthens (~1.5%/m·s⁻¹)
+    }
+    playsLike = Math.round(distanceUserToGreen + adj);
+  }
+  const showPlaysLike = !simpleView && playsLike !== null;
 
   if (activeLocation && currentHole.greenLocation) {
     initialBounds = [
@@ -656,6 +735,9 @@ export default function App() {
           />
 
           <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon(targetPoint ? distanceTargetToGreen : null)} rotateWithView={false} />
+          {/* Floating front/back labels on the green, measured from the aimed-at waypoint */}
+          {!simpleView && targetFB && <Marker position={[targetFB.frontPt.lat, targetFB.frontPt.lng]} icon={createEdgeLabel(targetFB.front)} rotateWithView={false} />}
+          {!simpleView && targetFB && <Marker position={[targetFB.backPt.lat, targetFB.backPt.lng]} icon={createEdgeLabel(targetFB.back)} rotateWithView={false} />}
           {userLocation && <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} rotateWithView={false} />}
           {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={createTargetIcon(distanceUserToTarget)} rotateWithView={false} />}
           {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
@@ -686,20 +768,68 @@ export default function App() {
         )}
       </div>
 
-      {/* FLOATING TOOLS RIGHT — DISTANCE + ELEVATION PILL */}
-      <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 60px)', right: '15px', zIndex: 1000 }}>
-        <div style={{ 
-          backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, 
-          padding: '8px 16px', borderRadius: theme.radius, fontWeight: '900', boxShadow: theme.shadow, 
-          border: theme.glassBorder, pointerEvents: 'none', minWidth: '60px', textAlign: 'center',
+      {/* FLOATING TOOLS RIGHT — DISTANCE / FRONT-BACK / ELEVATION / WIND */}
+      <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 60px)', right: '15px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'flex-end' }}>
+        <div style={{
+          backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen,
+          padding: '8px 18px', borderRadius: theme.radius, boxShadow: theme.shadow,
+          border: theme.glassBorder, pointerEvents: 'none', minWidth: '64px', textAlign: 'center',
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
         }}>
-          <span style={{ fontSize: '1.2rem' }}>
+          {/* Back of green (above) */}
+          {!simpleView && pillFB && (
+            <span style={{ fontSize: '0.85rem', fontWeight: 'bold', opacity: 0.6, lineHeight: 1.1 }}>{pillFB.back}</span>
+          )}
+          {/* Middle / centre — the main number, bigger and bolder */}
+          <span style={{ fontSize: '1.6rem', fontWeight: '900', lineHeight: 1.05 }}>
             {distanceUserToGreen !== null ? `${distanceUserToGreen}m` : gpsError ? 'Engin GPS' : 'Leitar...'}
           </span>
-          {/* Height difference to the green (tee->green in tee view, player->green in live view) */}
-          <ElevationBadge elevationDiff={elevationDiff} />
+          {/* Front of green (below) */}
+          {!simpleView && pillFB && (
+            <span style={{ fontSize: '0.85rem', fontWeight: 'bold', opacity: 0.6, lineHeight: 1.1 }}>{pillFB.front}</span>
+          )}
         </div>
+
+        {/* Wind + elevation pill. Wind: arrow points where it blows relative to the
+            hole, speed stacked over m/s. Elevation: bold triangle (uphill/downhill). */}
+        {(showWind || showElev) && (
+          <div style={{
+            backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen,
+            padding: '7px 14px', borderRadius: theme.radius, boxShadow: theme.shadow, border: theme.glassBorder,
+            pointerEvents: 'none', display: 'flex', alignItems: 'center', gap: '10px'
+          }}>
+            {showWind && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '1.3rem', lineHeight: 1 }}>↑</span>
+                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
+                  <span style={{ fontSize: '1.1rem', fontWeight: '900' }}>{Math.round(wind.speed)}</span>
+                  <span style={{ fontSize: '0.55rem', fontWeight: 'bold', marginTop: '1px' }}>m/s</span>
+                </span>
+              </div>
+            )}
+            {showWind && showElev && <div style={{ width: '1px', alignSelf: 'stretch', background: 'rgba(9,82,40,0.25)' }} />}
+            {showElev && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ fontSize: '1.1rem', fontWeight: '900', lineHeight: 1 }}>
+                  {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '—'}
+                </span>
+                <span style={{ fontSize: '1.1rem', fontWeight: '900' }}>{Math.abs(elevRounded)}<span style={{ fontSize: '0.6rem', fontWeight: 'bold' }}>m</span></span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* "Plays like" — distance adjusted for slope + head/tail wind */}
+        {showPlaysLike && (
+          <div style={{
+            backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen,
+            padding: '6px 16px', borderRadius: theme.radius, boxShadow: theme.shadow, border: theme.glassBorder,
+            pointerEvents: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
+          }}>
+            <span style={{ fontSize: '0.5rem', fontWeight: 'bold', letterSpacing: '1.5px', opacity: 0.6 }}>SPILAST</span>
+            <span style={{ fontSize: '1.25rem', fontWeight: '900', lineHeight: 1.05 }}>{playsLike}m</span>
+          </div>
+        )}
       </div>
 
       {/* MAP CONTROLS - PREV / NEXT */}
@@ -775,10 +905,11 @@ export default function App() {
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', justifyContent: 'center', marginBottom: '25px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginBottom: '25px' }}>
               <ToggleBtn label="Skor" checked={trackScore} onChange={setTrackScore} />
               <ToggleBtn label="Pútt" checked={trackPutts} onChange={setTrackPutts} />
               <ToggleBtn label="Leikur" checked={trackGame} onChange={setTrackGame} />
+              <ToggleBtn label="Einfalt" checked={simpleView} onChange={setSimpleView} />
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'center', width: '100%' }}>
