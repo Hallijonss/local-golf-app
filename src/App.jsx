@@ -126,8 +126,8 @@ const userIcon = divIcon({
 const createTargetIcon = (distance) => divIcon({
   className: '',
   html: `<div style="position: relative; display: flex; align-items: center; justify-content: center;">
-      <div style="width: 16px; height: 16px; border: 3px solid white; border-radius: 50%; background: ${theme.darkGreen}; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>
-      <div style="position: absolute; left: 24px; background: ${theme.softWhite}; color: ${theme.darkGreen}; padding: 4px 8px; border-radius: 4px; border: 1px solid ${theme.darkGreen}; font-size: 12px; font-weight: bold; white-space: nowrap; box-shadow: ${theme.shadow};">${distance !== null ? distance + 'm' : 'N/A'}</div>
+      <div style="width: 15px; height: 15px; border: 3px solid white; border-radius: 50%; background: ${theme.ink}; box-shadow: 0 1px 4px rgba(0,0,0,0.5);"></div>
+      <div style="position: absolute; left: 22px; background: ${theme.ink}; color: #fff; padding: 1px 6px; border-radius: 3px; font-family: ${theme.num}; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.45);">${distance !== null ? distance : '–'}</div>
     </div>`,
   iconSize: [20, 20], iconAnchor: [10, 10]
 });
