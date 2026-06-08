@@ -14,12 +14,29 @@ import easterEggImg from './assets/easter-egg.png';
 
 // --- DESIGN TOKENS ---
 const theme = {
-  darkGreen: '#095228',
+  darkGreen: '#0a4d2a',
   softWhite: 'rgba(255, 255, 255, 0.95)',
   frostedWhite: 'rgba(255, 255, 255, 0.85)',
   glassBorder: '1px solid rgba(9, 82, 40, 0.15)',
   shadow: '0 4px 12px rgba(0,0,0,0.15)',
-  radius: '4px' 
+  radius: '4px',
+  // Redesign tokens
+  ink: '#0a4d2a',
+  card: 'rgba(251, 252, 249, 0.92)',
+  hair: 'rgba(10, 77, 42, 0.16)',
+  panelShadow: '0 2px 14px rgba(0,0,0,0.20)',
+  sans: "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+  num: "'Barlow Condensed', 'Barlow', 'Helvetica Neue', sans-serif",
+};
+
+// Reusable card material + smallcaps label for the redesigned HUD.
+const cardStyle = {
+  background: theme.card, backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+  border: `1px solid ${theme.hair}`, boxShadow: theme.panelShadow, color: theme.ink,
+};
+const microLabel = {
+  fontSize: '0.5rem', fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase',
+  opacity: 0.5, fontFamily: theme.sans,
 };
 
 // --- MAP HELPER COMPONENTS ---
@@ -90,12 +107,12 @@ function MapEvents({ setTargetPoint }) {
 
 // --- ICONS ---
 const createGreenIcon = (distanceTargetToGreen) => divIcon({
-  className: '', 
+  className: '',
   html: `<div style="position: relative; display: flex; align-items: center; justify-content: center;">
-      <div style="background-color: ${theme.darkGreen}; width: 24px; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 14px; color: white; border: 2px solid white;">⚑</div>
-      ${distanceTargetToGreen !== null ? `<div style="position: absolute; left: 28px; background: ${theme.softWhite}; color: ${theme.darkGreen}; padding: 4px 8px; border-radius: 4px; border: 1px solid ${theme.darkGreen}; font-size: 12px; font-weight: bold; white-space: nowrap; box-shadow: ${theme.shadow};">${distanceTargetToGreen}m</div>` : ''}
+      <div style="background-color: ${theme.ink}; width: 22px; height: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: white; border: 2px solid white; box-shadow: 0 1px 5px rgba(0,0,0,0.4);">⚑</div>
+      ${distanceTargetToGreen !== null ? `<div style="position: absolute; left: 26px; background: ${theme.ink}; color: #fff; padding: 1px 6px; border-radius: 3px; font-family: ${theme.num}; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: 0 1px 5px rgba(0,0,0,0.45);">${distanceTargetToGreen}</div>` : ''}
     </div>`,
-  iconSize: [24, 24], iconAnchor: [12, 12]
+  iconSize: [22, 22], iconAnchor: [11, 11]
 });
 
 const userIcon = divIcon({
@@ -116,7 +133,7 @@ const createTargetIcon = (distance) => divIcon({
 // Small distance label centred on a green edge point (front/back when aiming).
 const createEdgeLabel = (distance) => divIcon({
   className: '',
-  html: `<div style="display: inline-block; transform: translate(-50%, -50%); background: ${theme.softWhite}; color: ${theme.darkGreen}; padding: 2px 7px; border-radius: 4px; border: 1px solid ${theme.darkGreen}; font-size: 11px; font-weight: bold; white-space: nowrap; box-shadow: ${theme.shadow};">${distance}m</div>`,
+  html: `<div style="display: inline-block; transform: translate(-50%, -50%); background: ${theme.ink}; color: #fff; padding: 1px 5px; border-radius: 3px; font-family: ${theme.num}; font-size: 11px; font-weight: 600; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.4);">${distance}</div>`,
   iconSize: [0, 0], iconAnchor: [0, 0]
 });
 
@@ -574,11 +591,9 @@ export default function App() {
   };
 
   const topPillStyle = {
-    position: 'absolute', top: 'max(env(safe-area-inset-top, 15px), 15px)', zIndex: 1000, 
-    background: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, 
-    padding: '0 14px', borderRadius: theme.radius, border: theme.glassBorder, 
-    fontWeight: '900', boxShadow: theme.shadow, fontSize: '0.95rem', textTransform: 'uppercase', 
-    letterSpacing: '1px', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '38px'
+    position: 'absolute', top: 'max(env(safe-area-inset-top, 15px), 15px)', zIndex: 1000,
+    ...cardStyle, padding: '0 14px', borderRadius: theme.radius,
+    display: 'flex', alignItems: 'center', justifyContent: 'center', height: '40px'
   };
 
   const stepperBtnStyle = {
@@ -682,16 +697,17 @@ export default function App() {
   };
 
   return (
-    <div style={{ 
-      display: 'flex', flexDirection: 'column', height: '100dvh', width: '100vw', 
-      fontFamily: '"Helvetica Neue", Helvetica, sans-serif', backgroundColor: '#e2e8e4',
+    <div style={{
+      display: 'flex', flexDirection: 'column', height: '100dvh', width: '100vw',
+      fontFamily: theme.sans, backgroundColor: '#e2e8e4',
       position: 'relative', overflow: 'hidden'
     }}>
       <style>{`
-        .no-spinners::-webkit-inner-spin-button, 
+        .no-spinners::-webkit-inner-spin-button,
         .no-spinners::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         .no-spinners { -moz-appearance: textfield; }
         .punchy-map-tiles { filter: contrast(1.05) saturate(1.2) brightness(1.0); }
+        .num { font-family: ${theme.num}; font-feature-settings: 'tnum' 1; font-variant-numeric: tabular-nums; }
       `}</style>
       
       <video ref={videoRef} muted playsInline style={{ display: 'none' }} />
@@ -747,99 +763,97 @@ export default function App() {
       </div>
 
       {/* FLOATING TOP BAR - LEFT PILL */}
-      <div style={{ ...topPillStyle, left: '15px' }}>
-        Hola {currentHole.hole} <span style={{opacity: 0.5, margin: '0 6px'}}>|</span> Par {currentHole.par}
+      <div style={{ ...topPillStyle, left: '15px', gap: '9px' }}>
+        <span style={{ ...microLabel }}>Hola</span>
+        <span className="num" style={{ fontSize: '1.45rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.hole}</span>
+        <span style={{ width: '1px', height: '18px', background: theme.hair }} />
+        <span style={{ ...microLabel }}>Par</span>
+        <span className="num" style={{ fontSize: '1.45rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.par}</span>
       </div>
 
       {/* FLOATING TOP BAR - RIGHT PILL */}
       <button onClick={() => setShowScorecard(true)} style={{ ...topPillStyle, right: '15px', cursor: 'pointer' }}>
-        Skorkort
+        <span style={{ ...microLabel, fontSize: '0.62rem', opacity: 0.85 }}>Skorkort</span>
       </button>
 
       {/* FLOATING TOOLS LEFT */}
       <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 60px)', left: '15px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1000 }}>
-        <div onClick={() => setIsTeeView(!isTeeView)} style={{ backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, padding: '10px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: theme.shadow, border: theme.glassBorder, cursor: 'pointer' }}>
+        <div onClick={() => setIsTeeView(!isTeeView)} style={{ ...cardStyle, color: theme.ink, padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
           {isTeeView ? <Flag size={20} /> : <Navigation size={20} />}
         </div>
         {!isTeeView && (
-          <div onClick={() => setCenterTrigger(c => c + 1)} style={{ backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, padding: '10px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: theme.shadow, border: theme.glassBorder, cursor: 'pointer' }}>
+          <div onClick={() => setCenterTrigger(c => c + 1)} style={{ ...cardStyle, color: theme.ink, padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
             <Crosshair size={20} />
           </div>
         )}
       </div>
 
-      {/* FLOATING TOOLS RIGHT — DISTANCE / FRONT-BACK / ELEVATION / WIND */}
-      <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 60px)', right: '15px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'flex-end' }}>
+      {/* WIND — top-centre compass (complex view) */}
+      {showWind && (
         <div style={{
-          backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen,
-          padding: '8px 18px', borderRadius: theme.radius, boxShadow: theme.shadow,
-          border: theme.glassBorder, pointerEvents: 'none', minWidth: '64px', textAlign: 'center',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
+          position: 'absolute', top: 'max(env(safe-area-inset-top, 15px), 15px)', left: '50%', transform: 'translateX(-50%)',
+          zIndex: 1000, ...cardStyle, borderRadius: '999px', height: '40px', padding: '0 13px 0 8px',
+          display: 'flex', alignItems: 'center', gap: '7px', pointerEvents: 'none'
         }}>
-          {/* Back of green (above) */}
-          {!simpleView && pillFB && (
-            <span style={{ fontSize: '0.85rem', fontWeight: 'bold', opacity: 0.6, lineHeight: 1.1 }}>{pillFB.back}</span>
-          )}
-          {/* Middle / centre — the main number, bigger and bolder */}
-          <span style={{ fontSize: '1.6rem', fontWeight: '900', lineHeight: 1.05 }}>
-            {distanceUserToGreen !== null ? `${distanceUserToGreen}m` : gpsError ? 'Engin GPS' : 'Leitar...'}
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: '24px', height: '24px', borderRadius: '50%', border: `1.5px solid ${theme.ink}`
+          }}>
+            <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '1rem', lineHeight: 1 }}>↑</span>
           </span>
-          {/* Front of green (below) */}
+          <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 1 }}>{Math.round(wind.speed)}</span>
+          <span style={{ ...microLabel, fontSize: '0.46rem' }}>m/s</span>
+        </div>
+      )}
+
+      {/* PRIMARY READOUT — right edge, vertically centred */}
+      <div style={{
+        position: 'absolute', top: '50%', right: '15px', transform: 'translateY(-50%)', zIndex: 1000, pointerEvents: 'none'
+      }}>
+        <div style={{
+          ...cardStyle, borderRadius: theme.radius, padding: '11px 16px', minWidth: '78px',
+          display: 'flex', flexDirection: 'column', alignItems: 'center'
+        }}>
+          {/* Back of green */}
           {!simpleView && pillFB && (
-            <span style={{ fontSize: '0.85rem', fontWeight: 'bold', opacity: 0.6, lineHeight: 1.1 }}>{pillFB.front}</span>
+            <span className="num" style={{ fontSize: '1.05rem', fontWeight: 600, opacity: 0.5, lineHeight: 1 }}>{pillFB.back}</span>
+          )}
+          {/* Centre distance — hero */}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px' }}>
+            <span className="num" style={{ fontSize: distanceUserToGreen !== null ? '2.7rem' : '1.05rem', fontWeight: 700, lineHeight: 0.85 }}>
+              {distanceUserToGreen !== null ? distanceUserToGreen : gpsError ? 'Engin GPS' : 'Leitar...'}
+            </span>
+            {distanceUserToGreen !== null && <span style={{ ...microLabel, fontSize: '0.52rem' }}>m</span>}
+          </div>
+          {/* Front of green */}
+          {!simpleView && pillFB && (
+            <span className="num" style={{ fontSize: '1.05rem', fontWeight: 600, opacity: 0.5, lineHeight: 1, marginTop: '1px' }}>{pillFB.front}</span>
+          )}
+          {/* Slope */}
+          {showElev && (
+            <span className="num" style={{ fontSize: '0.95rem', fontWeight: 700, lineHeight: 1, marginTop: '4px', opacity: 0.85 }}>
+              {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'} {Math.abs(elevRounded)}<span style={{ ...microLabel, fontSize: '0.42rem' }}>m</span>
+            </span>
+          )}
+          {/* Plays-like */}
+          {showPlaysLike && (
+            <>
+              <span style={{ width: '72%', height: '1px', background: theme.hair, margin: '8px 0 4px' }} />
+              <span style={{ ...microLabel, fontSize: '0.46rem' }}>Spilast</span>
+              <span className="num" style={{ fontSize: '1.6rem', fontWeight: 700, lineHeight: 0.95 }}>{playsLike}</span>
+            </>
           )}
         </div>
-
-        {/* Wind + elevation pill. Wind: arrow points where it blows relative to the
-            hole, speed stacked over m/s. Elevation: bold triangle (uphill/downhill). */}
-        {(showWind || showElev) && (
-          <div style={{
-            backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen,
-            padding: '7px 14px', borderRadius: theme.radius, boxShadow: theme.shadow, border: theme.glassBorder,
-            pointerEvents: 'none', display: 'flex', alignItems: 'center', gap: '10px'
-          }}>
-            {showWind && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '1.3rem', lineHeight: 1 }}>↑</span>
-                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
-                  <span style={{ fontSize: '1.1rem', fontWeight: '900' }}>{Math.round(wind.speed)}</span>
-                  <span style={{ fontSize: '0.55rem', fontWeight: 'bold', marginTop: '1px' }}>m/s</span>
-                </span>
-              </div>
-            )}
-            {showWind && showElev && <div style={{ width: '1px', alignSelf: 'stretch', background: 'rgba(9,82,40,0.25)' }} />}
-            {showElev && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ fontSize: '1.1rem', fontWeight: '900', lineHeight: 1 }}>
-                  {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '—'}
-                </span>
-                <span style={{ fontSize: '1.1rem', fontWeight: '900' }}>{Math.abs(elevRounded)}<span style={{ fontSize: '0.6rem', fontWeight: 'bold' }}>m</span></span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* "Plays like" — distance adjusted for slope + head/tail wind */}
-        {showPlaysLike && (
-          <div style={{
-            backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen,
-            padding: '6px 16px', borderRadius: theme.radius, boxShadow: theme.shadow, border: theme.glassBorder,
-            pointerEvents: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
-          }}>
-            <span style={{ fontSize: '0.5rem', fontWeight: 'bold', letterSpacing: '1.5px', opacity: 0.6 }}>SPILAST</span>
-            <span style={{ fontSize: '1.25rem', fontWeight: '900', lineHeight: 1.05 }}>{playsLike}m</span>
-          </div>
-        )}
       </div>
 
       {/* MAP CONTROLS - PREV / NEXT */}
       <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
-        <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, padding: '12px 18px', borderRadius: theme.radius, border: theme.glassBorder, fontWeight: '900', boxShadow: theme.shadow, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+        <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ ...cardStyle, color: theme.ink, padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
           Fyrri
         </button>
       </div>
       <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', right: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
-        <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ backgroundColor: theme.frostedWhite, backdropFilter: 'blur(8px)', color: theme.darkGreen, padding: '12px 18px', borderRadius: theme.radius, border: theme.glassBorder, fontWeight: '900', boxShadow: theme.shadow, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+        <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ ...cardStyle, color: theme.ink, padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
           Næsta
         </button>
       </div>
