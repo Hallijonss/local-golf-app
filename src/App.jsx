@@ -5,7 +5,7 @@ import { calculateDistanceInMeters, calculateBearing, getElevation } from './uti
 import { MapContainer, Marker, useMapEvents, Polyline, useMap, TileLayer } from 'react-leaflet';
 import L from 'leaflet';
 import { divIcon } from 'leaflet';
-import { Navigation, Flag, Crosshair, Moon, Sun } from 'lucide-react';
+import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 import 'leaflet/dist/leaflet.css';
@@ -33,17 +33,27 @@ const makeTheme = (dark) => ({
   ...(dark ? {
     panel: 'rgba(9, 26, 21, 0.68)', panelText: '#eef3ea', hairLight: 'rgba(255,255,255,0.22)', accent: '#f0d28c',
     scBg: '#0f211a', scText: '#e7efe6', scLine: 'rgba(255,255,255,0.20)', scHead: '#0b1813', scCell: '#12251c', scAccent: '#17392b', scShape: '#e7efe6',
-    chip: { bg: 'rgba(8,49,28,0.52)', fg: '#ffffff', border: 'rgba(255,255,255,0.8)' },
+    chip: { bg: 'rgba(10,26,20,0.94)', fg: '#ffffff', border: 'rgba(255,255,255,0.55)' },
   } : {
     panel: 'rgba(255,255,255,0.93)', panelText: '#16241d', hairLight: 'rgba(10,40,28,0.18)', accent: '#9a6f1e',
     scBg: '#f5f8f5', scText: '#0a4d2a', scLine: 'rgba(10,77,42,0.65)', scHead: '#eef3f0', scCell: '#ffffff', scAccent: '#dff0e4', scShape: '#0a4d2a',
-    chip: { bg: 'rgba(255,255,255,0.94)', fg: '#16241d', border: 'rgba(10,40,28,0.55)' },
+    chip: { bg: 'rgba(255,255,255,0.97)', fg: '#16241d', border: 'rgba(10,40,28,0.5)' },
   }),
 });
 
 const microLabel = {
   fontSize: '0.52rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase',
   opacity: 0.62, fontFamily: baseTheme.sans,
+};
+
+// Move a lat/lng `dist` metres along a compass `bearingDeg` (geodesic).
+const offsetLatLng = (lat, lng, bearingDeg, dist) => {
+  const R = 6378137;
+  const d = dist / R, t = bearingDeg * Math.PI / 180;
+  const p1 = lat * Math.PI / 180, l1 = lng * Math.PI / 180;
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(t));
+  const l2 = l1 + Math.atan2(Math.sin(t) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return { lat: p2 * 180 / Math.PI, lng: l2 * 180 / Math.PI };
 };
 
 // --- MAP HELPER COMPONENTS ---
@@ -73,7 +83,13 @@ function MapCameraTracker({ startLoc, greenLoc, centerTrigger, currentHoleIndex,
         let targetZoom = Math.log2((initialResolution * Math.cos(latRad)) / metersPerPixel);
         if (targetZoom > 21) targetZoom = 21;
         if (targetZoom < 5) targetZoom = 5;
-        map.setView([centerLat, centerLng], targetZoom, { animate: false });
+        // Left-skew the framing (centre nudged screen-right of the play line) and
+        // pushed down a little, so the green sits just below/right of the PAR pill
+        // and the right-hand info rail stays clear.
+        const playBearing = calculateBearing(startLoc.lat, startLoc.lng, greenLoc.lat, greenLoc.lng);
+        let c = offsetLatLng(centerLat, centerLng, playBearing + 90, mapSize.x * 0.13 * metersPerPixel);
+        c = offsetLatLng(c.lat, c.lng, playBearing, mapSize.y * 0.09 * metersPerPixel);
+        map.setView([c.lat, c.lng], targetZoom, { animate: false });
       }
     };
 
@@ -801,9 +817,9 @@ export default function App() {
         <span className="num" style={{ fontSize: '1.3rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.par}</span>
       </div>
 
-      {/* FLOATING TOP BAR - RIGHT PILL */}
-      <button onClick={() => setShowScorecard(true)} style={{ ...topPillStyle, right: '15px', cursor: 'pointer' }}>
-        <span style={{ ...microLabel, fontSize: '0.7rem', opacity: 0.9 }}>Skorkort</span>
+      {/* FLOATING TOP BAR - RIGHT PILL (same width as the info rail) */}
+      <button onClick={() => setShowScorecard(true)} style={{ ...topPillStyle, right: '15px', width: '104px', cursor: 'pointer' }}>
+        <span style={{ ...microLabel, fontSize: '0.68rem', opacity: 0.9, letterSpacing: '0.12em' }}>Skorkort</span>
       </button>
 
       {/* FLOATING TOOLS LEFT */}
@@ -818,53 +834,54 @@ export default function App() {
         )}
       </div>
 
-      {/* CONDITIONS — wind + slope, bottom-right above NÆSTA (complex view) */}
-      {(showWind || showElev) && (
-        <div style={{
-          position: 'absolute', right: '15px', zIndex: 1000, pointerEvents: 'none',
-          bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 192px)' : 'calc(env(safe-area-inset-bottom, 15px) + 66px)',
-          transition: 'bottom 0.3s ease',
-          ...cardStyle, borderRadius: theme.radius, padding: '8px 11px',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '7px'
-        }}>
-          {showWind && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-              <span style={{
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                width: '21px', height: '21px', borderRadius: '50%', border: `1.5px solid ${theme.panelText}`
-              }}>
-                <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '0.85rem', lineHeight: 1 }}>↑</span>
-              </span>
-              <span className="num" style={{ fontSize: '1.45rem', fontWeight: 700, lineHeight: 0.85 }}>{Math.round(wind.speed)}</span>
-            </div>
-          )}
-          {showWind && showElev && <span style={{ width: '85%', height: '1px', background: theme.hairLight }} />}
-          {showElev && (
-            <span className="num" style={{ fontSize: '1.45rem', fontWeight: 700, lineHeight: 0.85 }}>
-              {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'} {Math.abs(elevRounded)}
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* PRIMARY READOUT — distance + plays-like, top-right (aligned with left tools) */}
+      {/* RIGHT INFO RAIL — distance + conditions, aligned with the left tools */}
       <div style={{
         position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 54px)', right: '15px', zIndex: 1000,
-        ...cardStyle, borderRadius: theme.radius, padding: '8px 14px', minWidth: '68px',
-        display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'none'
+        width: '104px', display: 'flex', flexDirection: 'column', gap: '8px', pointerEvents: 'none'
       }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px' }}>
-          <span className="num" style={{ fontSize: distanceUserToGreen !== null ? '2.6rem' : '1.05rem', fontWeight: 700, lineHeight: 0.82 }}>
-            {distanceUserToGreen !== null ? distanceUserToGreen : gpsError ? 'Engin GPS' : 'Leitar...'}
-          </span>
-          {distanceUserToGreen !== null && <span style={{ ...microLabel, fontSize: '0.5rem' }}>m</span>}
+        <div style={{
+          ...cardStyle, borderRadius: theme.radius, padding: '8px 6px',
+          display: 'flex', flexDirection: 'column', alignItems: 'center'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px' }}>
+            <span className="num" style={{ fontSize: distanceUserToGreen !== null ? '2.6rem' : '1.05rem', fontWeight: 700, lineHeight: 0.82 }}>
+              {distanceUserToGreen !== null ? distanceUserToGreen : gpsError ? 'Engin GPS' : 'Leitar...'}
+            </span>
+            {distanceUserToGreen !== null && <span style={{ ...microLabel, fontSize: '0.5rem' }}>m</span>}
+          </div>
+          {showPlaysLike && (
+            <>
+              <span style={{ width: '78%', height: '1px', background: theme.hairLight, margin: '5px 0 3px' }} />
+              <span style={{ ...microLabel, fontSize: '0.46rem' }}>Spilast</span>
+              <span className="num" style={{ fontSize: '1.5rem', fontWeight: 700, lineHeight: 0.92, color: theme.accent }}>{playsLike}</span>
+            </>
+          )}
         </div>
-        {showPlaysLike && (
-          <>
-            <span style={{ width: '78%', height: '1px', background: theme.hairLight, margin: '5px 0 3px' }} />
-            <span style={{ ...microLabel, fontSize: '0.46rem' }}>Spilast</span>
-            <span className="num" style={{ fontSize: '1.5rem', fontWeight: 700, lineHeight: 0.92, color: theme.accent }}>{playsLike}</span>
-          </>
+
+        {/* Conditions — wind | slope side by side, same width as the distance box */}
+        {(showWind || showElev) && (
+          <div style={{
+            ...cardStyle, borderRadius: theme.radius, padding: '7px 6px',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
+          }}>
+            {showWind && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: '18px', height: '18px', borderRadius: '50%', border: `1.5px solid ${theme.panelText}`
+                }}>
+                  <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '0.72rem', lineHeight: 1 }}>↑</span>
+                </span>
+                <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.85 }}>{Math.round(wind.speed)}</span>
+              </div>
+            )}
+            {showWind && showElev && <span style={{ width: '1px', alignSelf: 'stretch', background: theme.hairLight }} />}
+            {showElev && (
+              <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.85 }}>
+                {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'}{Math.abs(elevRounded)}
+              </span>
+            )}
+          </div>
         )}
       </div>
 
@@ -936,10 +953,13 @@ export default function App() {
       {showScorecard && (
         <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 9999, display: 'flex', flexDirection: 'column', color: theme.scText }}>
           <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '13px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
               <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900' }}>Skorkort</h2>
               <div onClick={() => setDarkMode((d) => !d)} title="Ljóst / Dökkt þema" style={{ cursor: 'pointer', color: 'white', opacity: 0.8, display: 'flex', alignItems: 'center' }}>
                 {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+              </div>
+              <div onClick={() => setSimpleView((s) => !s)} title="Einfalt / Ítarlegt yfirlit" style={{ cursor: 'pointer', color: 'white', opacity: 0.8, display: 'flex', alignItems: 'center' }}>
+                {simpleView ? <Eye size={18} /> : <EyeOff size={18} />}
               </div>
             </div>
             <button onClick={() => setShowScorecard(false)} style={{ background: 'transparent', color: 'white', padding: '8px 16px', border: '1px solid white', borderRadius: theme.radius, cursor: 'pointer', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>Loka</button>
@@ -950,7 +970,6 @@ export default function App() {
               <ToggleBtn label="Skor" checked={trackScore} onChange={setTrackScore} theme={theme} />
               <ToggleBtn label="Pútt" checked={trackPutts} onChange={setTrackPutts} theme={theme} />
               <ToggleBtn label="Leikur" checked={trackGame} onChange={setTrackGame} theme={theme} />
-              <ToggleBtn label="Einfalt" checked={simpleView} onChange={setSimpleView} theme={theme} />
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'center', width: '100%' }}>
