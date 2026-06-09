@@ -5,7 +5,7 @@ import { calculateDistanceInMeters, calculateBearing, getElevation } from './uti
 import { MapContainer, Marker, useMapEvents, Polyline, useMap, TileLayer } from 'react-leaflet';
 import L from 'leaflet';
 import { divIcon } from 'leaflet';
-import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff } from 'lucide-react';
+import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff, X } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 import 'leaflet/dist/leaflet.css';
@@ -57,9 +57,9 @@ const offsetLatLng = (lat, lng, bearingDeg, dist) => {
 };
 
 // --- MAP HELPER COMPONENTS ---
-function MapCameraTracker({ startLoc, greenLoc, centerTrigger, currentHoleIndex, isTeeView }) {
+function MapCameraTracker({ startLoc, greenLoc, centerTrigger, currentHoleIndex, isTeeView, footerH }) {
   const map = useMap();
-  
+
   useEffect(() => {
     const updateView = () => {
       if (!startLoc || !greenLoc) return;
@@ -76,19 +76,23 @@ function MapCameraTracker({ startLoc, greenLoc, centerTrigger, currentHoleIndex,
       const distanceMeters = pt1.distanceTo(pt2);
 
       if (distanceMeters > 0) {
-        const targetPixels = mapSize.y * 0.68;
+        // Fit the tee->green span into the space NOT covered by the footer, so
+        // both ends stay framed even when the scoring footer is tall.
+        const usableH = mapSize.y - footerH;
+        const targetPixels = usableH * 0.66;
         const metersPerPixel = distanceMeters / targetPixels;
         const initialResolution = 156543.03392;
         const latRad = centerLat * (Math.PI / 180);
         let targetZoom = Math.log2((initialResolution * Math.cos(latRad)) / metersPerPixel);
         if (targetZoom > 21) targetZoom = 21;
         if (targetZoom < 5) targetZoom = 5;
-        // Left-skew the framing (centre nudged screen-right of the play line) and
-        // pushed down a little, so the green sits just below/right of the PAR pill
-        // and the right-hand info rail stays clear.
+        // Left-skew so the right info rail stays clear; push the green below the
+        // PAR pill, but lift the framing when a tall footer is shown so the tee
+        // /player clears it.
         const playBearing = calculateBearing(startLoc.lat, startLoc.lng, greenLoc.lat, greenLoc.lng);
-        let c = offsetLatLng(centerLat, centerLng, playBearing + 90, mapSize.x * 0.13 * metersPerPixel);
-        c = offsetLatLng(c.lat, c.lng, playBearing, mapSize.y * 0.09 * metersPerPixel);
+        let c = offsetLatLng(centerLat, centerLng, playBearing + 90, mapSize.x * 0.08 * metersPerPixel);
+        const downPx = mapSize.y * 0.09 - footerH * 0.6;
+        c = offsetLatLng(c.lat, c.lng, playBearing, downPx * metersPerPixel);
         map.setView([c.lat, c.lng], targetZoom, { animate: false });
       }
     };
@@ -97,8 +101,8 @@ function MapCameraTracker({ startLoc, greenLoc, centerTrigger, currentHoleIndex,
     const timer = setTimeout(() => { map.invalidateSize(); updateView(); }, 500);
     map.on('resize', updateView);
     return () => { clearTimeout(timer); map.off('resize', updateView); };
-  }, [map, centerTrigger, currentHoleIndex, isTeeView]);
-  
+  }, [map, centerTrigger, currentHoleIndex, isTeeView, footerH]);
+
   return null;
 }
 
@@ -721,6 +725,11 @@ export default function App() {
   };
 
   const showFooter = trackScore || trackPutts || trackGame;
+  // Approx height the scoring footer occupies at the bottom, so the camera can
+  // keep the tee/player framed above it.
+  const footerH = showFooter
+    ? 30 + ((trackScore || trackPutts) ? 56 : 0) + (trackGame ? 48 : 0) + 10
+    : 0;
 
   const actionBtnStyle = {
     flex: 1, padding: '15px 5px', background: 'transparent', border: `2px solid ${theme.scLine}`, borderRadius: theme.radius,
@@ -777,7 +786,7 @@ export default function App() {
       {/* FULL-SCREEN MAP WITH LAYER STACKING */}
       <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
         <MapContainer bounds={initialBounds} doubleClickZoom={false} zoomControl={false} rotateControl={false} zoomSnap={0} maxZoom={22} rotate={true} style={{ width: '100%', height: '100%' }}>
-          <MapCameraTracker startLoc={activeLocation} greenLoc={currentHole.greenLocation} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} />
+          <MapCameraTracker startLoc={activeLocation} greenLoc={currentHole.greenLocation} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} footerH={footerH} />
           <MapRotationManager bearing={mapBearing} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} />
           <MapEvents setTargetPoint={setTargetPoint} />
 
@@ -952,17 +961,19 @@ export default function App() {
       {/* SCORECARD OVERLAY */}
       {showScorecard && (
         <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 9999, display: 'flex', flexDirection: 'column', color: theme.scText }}>
-          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-              <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900' }}>Skorkort</h2>
-              <div onClick={() => setDarkMode((d) => !d)} title="Ljóst / Dökkt þema" style={{ cursor: 'pointer', color: 'white', opacity: 0.8, display: 'flex', alignItems: 'center' }}>
-                {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', justifySelf: 'start' }}>
+              <div onClick={() => setSimpleView((s) => !s)} title="Einfalt / Ítarlegt yfirlit" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center' }}>
+                {simpleView ? <Eye size={19} /> : <EyeOff size={19} />}
               </div>
-              <div onClick={() => setSimpleView((s) => !s)} title="Einfalt / Ítarlegt yfirlit" style={{ cursor: 'pointer', color: 'white', opacity: 0.8, display: 'flex', alignItems: 'center' }}>
-                {simpleView ? <Eye size={18} /> : <EyeOff size={18} />}
+              <div onClick={() => setDarkMode((d) => !d)} title="Ljóst / Dökkt þema" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center' }}>
+                {darkMode ? <Sun size={19} /> : <Moon size={19} />}
               </div>
             </div>
-            <button onClick={() => setShowScorecard(false)} style={{ background: 'transparent', color: 'white', padding: '8px 16px', border: '1px solid white', borderRadius: theme.radius, cursor: 'pointer', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>Loka</button>
+            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Skorkort</h2>
+            <div onClick={() => setShowScorecard(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
+              <X size={24} />
+            </div>
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
