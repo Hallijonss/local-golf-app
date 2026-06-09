@@ -5,7 +5,7 @@ import { calculateDistanceInMeters, calculateBearing, getElevation } from './uti
 import { MapContainer, Marker, useMapEvents, Polyline, useMap, TileLayer } from 'react-leaflet';
 import L from 'leaflet';
 import { divIcon } from 'leaflet';
-import { Navigation, Flag, Crosshair } from 'lucide-react';
+import { Navigation, Flag, Crosshair, Moon, Sun } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 import 'leaflet/dist/leaflet.css';
@@ -13,32 +13,37 @@ import 'leaflet-rotate';
 import easterEggImg from './assets/easter-egg.png';
 
 // --- DESIGN TOKENS ---
-const theme = {
+const baseTheme = {
   darkGreen: '#0a4d2a',
   softWhite: 'rgba(255, 255, 255, 0.95)',
   frostedWhite: 'rgba(255, 255, 255, 0.85)',
   glassBorder: '1px solid rgba(9, 82, 40, 0.15)',
   shadow: '0 4px 12px rgba(0,0,0,0.15)',
   radius: '4px',
-  // Redesign tokens — dark-green glass HUD
   ink: '#0a4d2a',
-  panel: 'rgba(9, 26, 21, 0.68)',          // deep cool near-charcoal green (stands off the grass)
-  panelText: '#eef3ea',                     // cream
-  hairLight: 'rgba(255, 255, 255, 0.22)',   // hairline on dark glass
-  accent: '#f0d28c',                        // soft gold for the "plays like" number
   panelShadow: '0 2px 14px rgba(0,0,0,0.28)',
   sans: "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif",
   num: "'Barlow Condensed', 'Barlow', 'Helvetica Neue', sans-serif",
 };
 
-// Reusable glass material + smallcaps label for the HUD.
-const cardStyle = {
-  background: theme.panel, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
-  border: `1px solid ${theme.hairLight}`, boxShadow: theme.panelShadow, color: theme.panelText,
-};
+// Mode-dependent tokens merged over the base. The whole HUD + scorecard read
+// from these, so flipping `dark` re-themes everything (sc* = scorecard screen).
+const makeTheme = (dark) => ({
+  ...baseTheme,
+  ...(dark ? {
+    panel: 'rgba(9, 26, 21, 0.68)', panelText: '#eef3ea', hairLight: 'rgba(255,255,255,0.22)', accent: '#f0d28c',
+    scBg: '#0f211a', scText: '#e7efe6', scLine: 'rgba(255,255,255,0.20)', scHead: '#0b1813', scCell: '#12251c', scAccent: '#17392b', scShape: '#e7efe6',
+    chip: { bg: 'rgba(8,49,28,0.52)', fg: '#ffffff', border: 'rgba(255,255,255,0.8)' },
+  } : {
+    panel: 'rgba(255,255,255,0.93)', panelText: '#16241d', hairLight: 'rgba(10,40,28,0.18)', accent: '#9a6f1e',
+    scBg: '#f5f8f5', scText: '#0a4d2a', scLine: 'rgba(10,77,42,0.65)', scHead: '#eef3f0', scCell: '#ffffff', scAccent: '#dff0e4', scShape: '#0a4d2a',
+    chip: { bg: 'rgba(255,255,255,0.94)', fg: '#16241d', border: 'rgba(10,40,28,0.55)' },
+  }),
+});
+
 const microLabel = {
   fontSize: '0.52rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase',
-  opacity: 0.62, fontFamily: theme.sans,
+  opacity: 0.62, fontFamily: baseTheme.sans,
 };
 
 // --- MAP HELPER COMPONENTS ---
@@ -108,12 +113,9 @@ function MapEvents({ setTargetPoint }) {
 }
 
 // --- ICONS ---
-const createGreenIcon = (distanceTargetToGreen) => divIcon({
+const createGreenIcon = () => divIcon({
   className: '',
-  html: `<div style="position: relative; display: flex; align-items: center; justify-content: center;">
-      <div style="background-color: ${theme.ink}; width: 22px; height: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: white; border: 2px solid white; box-shadow: 0 1px 5px rgba(0,0,0,0.4);">⚑</div>
-      ${distanceTargetToGreen !== null ? `<div style="position: absolute; left: 26px; background: ${theme.ink}; color: #fff; padding: 1px 6px; border-radius: 3px; font-family: ${theme.num}; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: 0 1px 5px rgba(0,0,0,0.45);">${distanceTargetToGreen}</div>` : ''}
-    </div>`,
+  html: `<div style="background-color: ${baseTheme.ink}; width: 22px; height: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: white; border: 2px solid white; box-shadow: 0 1px 5px rgba(0,0,0,0.4);">⚑</div>`,
   iconSize: [22, 22], iconAnchor: [11, 11]
 });
 
@@ -123,19 +125,18 @@ const userIcon = divIcon({
   iconSize: [18, 18], iconAnchor: [9, 9]
 });
 
-const createTargetIcon = (distance) => divIcon({
+// Plain aiming dot (the distances now live on the line midpoints as chips).
+const targetIcon = divIcon({
   className: '',
-  html: `<div style="position: relative; display: flex; align-items: center; justify-content: center;">
-      <div style="width: 15px; height: 15px; border: 3px solid white; border-radius: 50%; background: ${theme.ink}; box-shadow: 0 1px 4px rgba(0,0,0,0.5);"></div>
-      <div style="position: absolute; left: 22px; background: ${theme.ink}; color: #fff; padding: 1px 6px; border-radius: 3px; font-family: ${theme.num}; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.45);">${distance !== null ? distance : '–'}</div>
-    </div>`,
+  html: `<div style="width: 15px; height: 15px; border: 3px solid white; border-radius: 50%; background: ${baseTheme.ink}; box-shadow: 0 1px 4px rgba(0,0,0,0.5);"></div>`,
   iconSize: [20, 20], iconAnchor: [10, 10]
 });
 
-// Small distance label centred on a green edge point (front/back when aiming).
-const createEdgeLabel = (distance) => divIcon({
+// Distance chip centred on a point (green front/back, and the line midpoints).
+// `c` carries the mode colours { bg, fg, border }.
+const createChip = (distance, c) => divIcon({
   className: '',
-  html: `<div style="display: inline-block; transform: translate(-50%, -50%); background: rgba(8,49,28,0.40); color: #fff; padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.8); font-family: ${theme.num}; font-size: 12px; font-weight: 600; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.7);">${distance}</div>`,
+  html: `<div style="display: inline-block; transform: translate(-50%, -50%); background: ${c.bg}; color: ${c.fg}; padding: 1px 6px; border-radius: 3px; border: 1px solid ${c.border}; font-family: ${baseTheme.num}; font-size: 12px; font-weight: 600; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.45);">${distance}</div>`,
   iconSize: [0, 0], iconAnchor: [0, 0]
 });
 
@@ -156,45 +157,44 @@ const frontBackFrom = (from, points) => {
 };
 
 // --- SCORECARD HELPER COMPONENTS ---
-const getScoreStyles = (score, par) => {
-  if (!score || score === 0) return { shape: null, textColor: theme.darkGreen };
+const getScoreStyles = (score, par, col) => {
+  if (!score || score === 0) return { shape: null, textColor: col };
   const diff = score - par;
-  if (diff <= -2) return { shape: 'double-circle', textColor: theme.darkGreen };
-  if (diff === -1) return { shape: 'circle', textColor: theme.darkGreen };
-  if (diff === 0) return { shape: null, textColor: theme.darkGreen };
-  if (diff === 1) return { shape: 'square', textColor: theme.darkGreen };
-  if (diff === 2) return { shape: 'double-square', textColor: theme.darkGreen };
+  if (diff <= -2) return { shape: 'double-circle', textColor: col };
+  if (diff === -1) return { shape: 'circle', textColor: col };
+  if (diff === 0) return { shape: null, textColor: col };
+  if (diff === 1) return { shape: 'square', textColor: col };
+  if (diff === 2) return { shape: 'double-square', textColor: col };
   return { shape: 'red-square', textColor: '#fff' };
 };
 
-const renderScoreShape = (shape) => {
+const renderScoreShape = (shape, col) => {
   const base = { width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' };
-  if (shape === 'circle') return <div style={{ ...base, border: `1.5px solid ${theme.darkGreen}`, borderRadius: '50%' }} />;
+  if (shape === 'circle') return <div style={{ ...base, border: `1.5px solid ${col}`, borderRadius: '50%' }} />;
   if (shape === 'double-circle') return (
-    <div style={{ ...base, border: `1.5px solid ${theme.darkGreen}`, borderRadius: '50%', padding: '2px', boxSizing: 'border-box' }}>
-      <div style={{ width: '100%', height: '100%', border: `1px solid ${theme.darkGreen}`, borderRadius: '50%' }} />
+    <div style={{ ...base, border: `1.5px solid ${col}`, borderRadius: '50%', padding: '2px', boxSizing: 'border-box' }}>
+      <div style={{ width: '100%', height: '100%', border: `1px solid ${col}`, borderRadius: '50%' }} />
     </div>
   );
-  if (shape === 'square') return <div style={{ ...base, border: `1.5px solid ${theme.darkGreen}` }} />;
+  if (shape === 'square') return <div style={{ ...base, border: `1.5px solid ${col}` }} />;
   if (shape === 'double-square') return (
-    <div style={{ ...base, border: `1.5px solid ${theme.darkGreen}`, padding: '2px', boxSizing: 'border-box' }}>
-      <div style={{ width: '100%', height: '100%', border: `1px solid ${theme.darkGreen}` }} />
+    <div style={{ ...base, border: `1.5px solid ${col}`, padding: '2px', boxSizing: 'border-box' }}>
+      <div style={{ width: '100%', height: '100%', border: `1px solid ${col}` }} />
     </div>
   );
   if (shape === 'red-square') return <div style={{ ...base, backgroundColor: '#d32f2f' }} />;
   return null;
 };
 
-const ToggleBtn = ({ label, checked, onChange }) => (
-  <div 
-    onClick={() => onChange(!checked)} 
+const ToggleBtn = ({ label, checked, onChange, theme }) => (
+  <div
+    onClick={() => onChange(!checked)}
     style={{
       padding: '7px 11px', borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.78rem',
-      backgroundColor: checked ? theme.darkGreen : theme.softWhite,
-      color: checked ? '#fff' : theme.darkGreen,
-      border: `1px solid ${theme.darkGreen}`,
+      backgroundColor: checked ? theme.scText : 'transparent',
+      color: checked ? theme.scBg : theme.scText,
+      border: `1px solid ${checked ? theme.scText : theme.scLine}`,
       fontWeight: 'bold',
-      boxShadow: checked ? theme.shadow : 'none',
       transition: 'all 0.1s ease',
       textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap'
     }}
@@ -203,14 +203,14 @@ const ToggleBtn = ({ label, checked, onChange }) => (
   </div>
 );
 
-const MatchToggleBtn = ({ label, value, selected, onClick }) => (
-  <div 
+const MatchToggleBtn = ({ label, value, selected, onClick, theme }) => (
+  <div
     onClick={() => onClick(value)}
     style={{
       padding: '7px 4px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
       borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 700,
       backgroundColor: selected ? theme.panelText : 'transparent',
-      color: selected ? theme.ink : theme.panelText,
+      color: selected ? theme.scBg : theme.panelText,
       border: `1px solid ${selected ? theme.panelText : theme.hairLight}`,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       flex: 1, textAlign: 'center', boxSizing: 'border-box',
@@ -245,6 +245,18 @@ export default function App() {
 
   // Simple view: map shows only the centre distance (no elevation, wind, F/B).
   const [simpleView, setSimpleView] = useState(() => JSON.parse(localStorage.getItem('simpleView')) || false);
+
+  // Dark / light theme for the whole app (HUD + scorecard). Defaults to dark.
+  const [darkMode, setDarkMode] = useState(() => {
+    const s = localStorage.getItem('darkMode');
+    return s !== null ? JSON.parse(s) : true;
+  });
+  const theme = makeTheme(darkMode);
+  const cardStyle = {
+    background: theme.panel, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+    border: `1px solid ${theme.hairLight}`, boxShadow: theme.panelShadow, color: theme.panelText,
+  };
+  const chip = theme.chip;
   
   const [matchPlayResult, setMatchPlayResult] = useState('');
   const [hideEasterEgg, setHideEasterEgg] = useState(false);
@@ -338,7 +350,15 @@ export default function App() {
     localStorage.setItem('trackPutts', JSON.stringify(trackPutts));
     localStorage.setItem('trackGame', JSON.stringify(trackGame));
     localStorage.setItem('simpleView', JSON.stringify(simpleView));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, simpleView]);
+    localStorage.setItem('darkMode', JSON.stringify(darkMode));
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, simpleView, darkMode]);
+
+  // Match the browser/PWA status-bar colour to the theme (fixes the green top border).
+  useEffect(() => {
+    let m = document.querySelector('meta[name="theme-color"]');
+    if (!m) { m = document.createElement('meta'); m.name = 'theme-color'; document.head.appendChild(m); }
+    m.content = darkMode ? '#0b1813' : '#0a4d2a';
+  }, [darkMode]);
 
   useEffect(() => {
     if (!trackGame) { setMatchPlayResult(''); return; }
@@ -436,7 +456,7 @@ export default function App() {
     setIsExporting(true); 
     setTimeout(() => { 
       if (scorecardRef.current) {
-        html2canvas(scorecardRef.current, { backgroundColor: '#f8f9fa', scale: 2 }).then(canvas => {
+        html2canvas(scorecardRef.current, { backgroundColor: theme.scBg, scale: 2 }).then(canvas => {
           const link = document.createElement('a');
           const dateString = new Date().toISOString().split('T')[0];
           link.download = `Mosgolf_Skorkort_${dateString}.png`;
@@ -578,12 +598,12 @@ export default function App() {
   const calculateTotal = (arr, start, end) => arr.slice(start, end).reduce((a, b) => a + b, 0);
 
   const SQUARE_CELL_SIZE = '44px';
-  const cellStyle = { 
+  const cellStyle = {
     display: 'flex', justifyContent: 'center', alignItems: 'center', height: SQUARE_CELL_SIZE,
-    borderBottom: `1px solid ${theme.darkGreen}`, borderRight: `1px solid ${theme.darkGreen}`, boxSizing: 'border-box', position: 'relative',
-    color: theme.darkGreen
+    borderBottom: `1px solid ${theme.scLine}`, borderRight: `1px solid ${theme.scLine}`, boxSizing: 'border-box', position: 'relative',
+    color: theme.scText
   };
-  const summaryCellStyle = { ...cellStyle, fontWeight: 'bold', backgroundColor: 'rgba(9, 82, 40, 0.05)', color: theme.darkGreen };
+  const summaryCellStyle = { ...cellStyle, fontWeight: 'bold', backgroundColor: theme.scAccent, color: theme.scText };
   
   const getGridCols = () => {
     const cols = ['40px', '40px'];
@@ -595,7 +615,7 @@ export default function App() {
 
   const topPillStyle = {
     position: 'absolute', top: 'max(env(safe-area-inset-top, 15px), 15px)', zIndex: 1000,
-    ...cardStyle, padding: '0 11px', borderRadius: theme.radius,
+    ...cardStyle, padding: '0 12px', borderRadius: theme.radius, boxSizing: 'border-box',
     display: 'flex', alignItems: 'center', justifyContent: 'center', height: '34px'
   };
 
@@ -614,12 +634,12 @@ export default function App() {
 
   const renderRow = (holeData, index) => {
     const scoreVal = scores[index] || 0;
-    const { shape, textColor } = getScoreStyles(scoreVal, holeData.par);
+    const { shape, textColor } = getScoreStyles(scoreVal, holeData.par, theme.scText);
     return (
       <React.Fragment key={index}>
-        <div 
+        <div
           onClick={() => { setCurrentHoleIndex(index); setShowScorecard(false); }}
-          style={{ ...cellStyle, fontWeight: 'bold', cursor: 'pointer', backgroundColor: '#eef3f0' }}
+          style={{ ...cellStyle, fontWeight: 'bold', cursor: 'pointer', backgroundColor: theme.scHead }}
           title={`Fara á holu ${holeData.hole}`}
         >
           {holeData.hole}
@@ -629,7 +649,7 @@ export default function App() {
         {trackScore && (
           <div style={{ ...cellStyle }}>
             <div style={{ position: 'absolute', zIndex: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {renderScoreShape(shape)}
+              {renderScoreShape(shape, theme.scShape)}
             </div>
             {isExporting ? (
               <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: textColor, fontWeight: 'bold' }}>
@@ -648,14 +668,14 @@ export default function App() {
         {trackPutts && (
           <div style={{ ...cellStyle }}>
             {isExporting ? (
-              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.darkGreen, fontWeight: 'bold' }}>
+              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.scText, fontWeight: 'bold' }}>
                 {putts[index] || ''}
               </div>
             ) : (
               <input 
                 type="number" inputMode="numeric" className="no-spinners"
                 value={putts[index] || ''} onChange={(e) => handlePuttsChange(e.target.value, index)} 
-                style={{ ...invisibleInputStyle, color: theme.darkGreen, fontWeight: 'bold' }} 
+                style={{ ...invisibleInputStyle, color: theme.scText, fontWeight: 'bold' }} 
               />
             )}
           </div>
@@ -664,13 +684,13 @@ export default function App() {
         {trackGame && (
           <div style={{ ...cellStyle, padding: '0' }}>
             {isExporting ? (
-              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.darkGreen, fontWeight: 'normal', fontSize: '0.9rem' }}>
+              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.scText, fontWeight: 'normal', fontSize: '0.9rem' }}>
                 {matchPlay[index] === 'A' ? 'Halli' : matchPlay[index] === 'B' ? 'Hinir' : matchPlay[index] === 'H' ? 'Féll' : ''}
               </div>
             ) : (
               <select 
                 value={matchPlay[index]} onChange={(e) => updateMatch(e.target.value, index)} 
-                style={{ ...invisibleInputStyle, color: theme.darkGreen, appearance: 'none', textAlignLast: 'center', fontWeight: 'bold', fontSize: '0.95rem' }}
+                style={{ ...invisibleInputStyle, color: theme.scText, appearance: 'none', textAlignLast: 'center', fontWeight: 'bold', fontSize: '0.95rem' }}
               >
                 <option value=""></option>
                 <option value="A">Halli</option>
@@ -687,9 +707,9 @@ export default function App() {
   const showFooter = trackScore || trackPutts || trackGame;
 
   const actionBtnStyle = {
-    flex: 1, padding: '15px 5px', background: theme.softWhite, border: `2px solid ${theme.darkGreen}`, borderRadius: theme.radius, 
-    fontWeight: 'bold', fontSize: '0.95rem', color: theme.darkGreen, cursor: 'pointer', 
-    textTransform: 'uppercase', letterSpacing: '0.5px', textAlign: 'center', boxShadow: theme.shadow
+    flex: 1, padding: '15px 5px', background: 'transparent', border: `2px solid ${theme.scLine}`, borderRadius: theme.radius,
+    fontWeight: 'bold', fontSize: '0.95rem', color: theme.scText, cursor: 'pointer',
+    textTransform: 'uppercase', letterSpacing: '0.5px', textAlign: 'center'
   };
 
   const clearBtnStyle = {
@@ -753,12 +773,19 @@ export default function App() {
             className="punchy-map-tiles"
           />
 
-          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon(null)} rotateWithView={false} />
-          {/* Front/back outline chips on the green (from waypoint if aiming, else player) */}
-          {greenFB && <Marker position={[greenFB.frontPt.lat, greenFB.frontPt.lng]} icon={createEdgeLabel(greenFB.front)} rotateWithView={false} />}
-          {greenFB && <Marker position={[greenFB.backPt.lat, greenFB.backPt.lng]} icon={createEdgeLabel(greenFB.back)} rotateWithView={false} />}
+          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon()} rotateWithView={false} />
+          {/* Front/back chips on the green (from waypoint if aiming, else player) */}
+          {greenFB && <Marker position={[greenFB.frontPt.lat, greenFB.frontPt.lng]} icon={createChip(greenFB.front, chip)} rotateWithView={false} />}
+          {greenFB && <Marker position={[greenFB.backPt.lat, greenFB.backPt.lng]} icon={createChip(greenFB.back, chip)} rotateWithView={false} />}
           {userLocation && <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} rotateWithView={false} />}
-          {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={createTargetIcon(distanceUserToTarget)} rotateWithView={false} />}
+          {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={targetIcon} rotateWithView={false} />}
+          {/* Distances on the line midpoints: player→mark and mark→hole */}
+          {userLocation && targetPoint && distanceUserToTarget !== null && (
+            <Marker position={[(userLocation.lat + targetPoint.lat) / 2, (userLocation.lng + targetPoint.lng) / 2]} icon={createChip(distanceUserToTarget, chip)} rotateWithView={false} />
+          )}
+          {targetPoint && distanceTargetToGreen !== null && (
+            <Marker position={[(targetPoint.lat + currentHole.greenLocation.lat) / 2, (targetPoint.lng + currentHole.greenLocation.lng) / 2]} icon={createChip(distanceTargetToGreen, chip)} rotateWithView={false} />
+          )}
           {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
           {userLocation && targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [targetPoint.lat, targetPoint.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
           {targetPoint && <Polyline positions={[[targetPoint.lat, targetPoint.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
@@ -780,7 +807,7 @@ export default function App() {
       </button>
 
       {/* FLOATING TOOLS LEFT */}
-      <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 60px)', left: '15px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1000 }}>
+      <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 54px)', left: '15px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1000 }}>
         <div onClick={() => setIsTeeView(!isTeeView)} style={{ ...cardStyle,padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
           {isTeeView ? <Flag size={20} /> : <Navigation size={20} />}
         </div>
@@ -791,38 +818,38 @@ export default function App() {
         )}
       </div>
 
-      {/* CONDITIONS — wind + slope, left edge (complex view) */}
+      {/* CONDITIONS — wind + slope, bottom-right above NÆSTA (complex view) */}
       {(showWind || showElev) && (
         <div style={{
-          position: 'absolute', top: '50%', left: '15px', transform: 'translateY(-50%)', zIndex: 1000,
-          ...cardStyle, borderRadius: theme.radius, padding: '9px 10px',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', pointerEvents: 'none'
+          position: 'absolute', right: '15px', zIndex: 1000, pointerEvents: 'none',
+          bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 192px)' : 'calc(env(safe-area-inset-bottom, 15px) + 66px)',
+          transition: 'bottom 0.3s ease',
+          ...cardStyle, borderRadius: theme.radius, padding: '8px 11px',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '7px'
         }}>
           {showWind && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
               <span style={{
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                width: '27px', height: '27px', borderRadius: '50%', border: `1.5px solid ${theme.panelText}`
+                width: '21px', height: '21px', borderRadius: '50%', border: `1.5px solid ${theme.panelText}`
               }}>
-                <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '1.05rem', lineHeight: 1 }}>↑</span>
+                <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '0.85rem', lineHeight: 1 }}>↑</span>
               </span>
-              <span className="num" style={{ fontSize: '1.15rem', fontWeight: 700, lineHeight: 0.9 }}>
-                {Math.round(wind.speed)}<span style={{ ...microLabel, fontSize: '0.4rem' }}>m/s</span>
-              </span>
+              <span className="num" style={{ fontSize: '1.45rem', fontWeight: 700, lineHeight: 0.85 }}>{Math.round(wind.speed)}</span>
             </div>
           )}
-          {showWind && showElev && <span style={{ width: '78%', height: '1px', background: theme.hairLight }} />}
+          {showWind && showElev && <span style={{ width: '85%', height: '1px', background: theme.hairLight }} />}
           {showElev && (
-            <span className="num" style={{ fontSize: '1.15rem', fontWeight: 700, lineHeight: 0.9 }}>
-              {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'} {Math.abs(elevRounded)}<span style={{ ...microLabel, fontSize: '0.4rem' }}>m</span>
+            <span className="num" style={{ fontSize: '1.45rem', fontWeight: 700, lineHeight: 0.85 }}>
+              {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'} {Math.abs(elevRounded)}
             </span>
           )}
         </div>
       )}
 
-      {/* PRIMARY READOUT — distance + plays-like, top-right */}
+      {/* PRIMARY READOUT — distance + plays-like, top-right (aligned with left tools) */}
       <div style={{
-        position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 50px)', right: '15px', zIndex: 1000,
+        position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 54px)', right: '15px', zIndex: 1000,
         ...cardStyle, borderRadius: theme.radius, padding: '8px 14px', minWidth: '68px',
         display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'none'
       }}>
@@ -897,9 +924,9 @@ export default function App() {
               borderTop: (trackScore || trackPutts) ? `1px solid ${theme.hairLight}` : 'none',
               boxSizing: 'border-box'
             }}>
-              <MatchToggleBtn label="Halli" value="A" selected={matchPlay[currentHoleIndex] === 'A'} onClick={toggleMatchPlay} />
-              <MatchToggleBtn label="Hinir" value="B" selected={matchPlay[currentHoleIndex] === 'B'} onClick={toggleMatchPlay} />
-              <MatchToggleBtn label="Féll" value="H" selected={matchPlay[currentHoleIndex] === 'H'} onClick={toggleMatchPlay} />
+              <MatchToggleBtn label="Halli" value="A" selected={matchPlay[currentHoleIndex] === 'A'} onClick={toggleMatchPlay} theme={theme} />
+              <MatchToggleBtn label="Hinir" value="B" selected={matchPlay[currentHoleIndex] === 'B'} onClick={toggleMatchPlay} theme={theme} />
+              <MatchToggleBtn label="Féll" value="H" selected={matchPlay[currentHoleIndex] === 'H'} onClick={toggleMatchPlay} theme={theme} />
             </div>
           )}
         </div>
@@ -907,54 +934,59 @@ export default function App() {
 
       {/* SCORECARD OVERLAY */}
       {showScorecard && (
-        <div style={{ position: 'absolute', inset: 0, backgroundColor: '#f5f8f5', zIndex: 9999, display: 'flex', flexDirection: 'column', color: theme.darkGreen }}>
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 9999, display: 'flex', flexDirection: 'column', color: theme.scText }}>
           <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900' }}>Skorkort</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '13px' }}>
+              <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900' }}>Skorkort</h2>
+              <div onClick={() => setDarkMode((d) => !d)} title="Ljóst / Dökkt þema" style={{ cursor: 'pointer', color: 'white', opacity: 0.8, display: 'flex', alignItems: 'center' }}>
+                {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+              </div>
+            </div>
             <button onClick={() => setShowScorecard(false)} style={{ background: 'transparent', color: 'white', padding: '8px 16px', border: '1px solid white', borderRadius: theme.radius, cursor: 'pointer', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>Loka</button>
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginBottom: '25px' }}>
-              <ToggleBtn label="Skor" checked={trackScore} onChange={setTrackScore} />
-              <ToggleBtn label="Pútt" checked={trackPutts} onChange={setTrackPutts} />
-              <ToggleBtn label="Leikur" checked={trackGame} onChange={setTrackGame} />
-              <ToggleBtn label="Einfalt" checked={simpleView} onChange={setSimpleView} />
+              <ToggleBtn label="Skor" checked={trackScore} onChange={setTrackScore} theme={theme} />
+              <ToggleBtn label="Pútt" checked={trackPutts} onChange={setTrackPutts} theme={theme} />
+              <ToggleBtn label="Leikur" checked={trackGame} onChange={setTrackGame} theme={theme} />
+              <ToggleBtn label="Einfalt" checked={simpleView} onChange={setSimpleView} theme={theme} />
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'center', width: '100%' }}>
-              <div ref={scorecardRef} style={{ background: '#fff', borderRadius: '0', border: `2px solid ${theme.darkGreen}`, overflow: 'hidden', marginBottom: '25px', width: '100%', boxShadow: theme.shadow }}>
-                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '0.8rem', backgroundColor: '#eef3f0', borderBottom: `2px solid ${theme.darkGreen}`, color: theme.darkGreen }}>
+              <div ref={scorecardRef} style={{ background: theme.scCell, borderRadius: '0', border: `2px solid ${theme.scLine}`, overflow: 'hidden', marginBottom: '25px', width: '100%', boxShadow: theme.shadow }}>
+                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '0.8rem', backgroundColor: theme.scHead, borderBottom: `2px solid ${theme.scLine}`, color: theme.scText }}>
                   <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>H</strong>
                   <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>P</strong>
                   {trackScore && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>SKOR</strong>}
                   {trackPutts && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>PÚTT</strong>}
                   {trackGame && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>LEIKUR</strong>}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '1.1rem', backgroundColor: '#fff', color: theme.darkGreen }}>
+                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '1.1rem', backgroundColor: theme.scCell, color: theme.scText }}>
                   {courseData.slice(0, 9).map((hole, i) => renderRow(hole, i))}
-                  <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}>ÚT</div>
-                  <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}>{courseData.slice(0, 9).reduce((sum, h) => sum + h.par, 0)}</div>
-                  {trackScore && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}>{calculateTotal(scores, 0, 9)}</div>}
-                  {trackPutts && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}>{calculateTotal(putts, 0, 9)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.darkGreen}` }}></div>}
+                  <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>ÚT</div>
+                  <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{courseData.slice(0, 9).reduce((sum, h) => sum + h.par, 0)}</div>
+                  {trackScore && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{calculateTotal(scores, 0, 9)}</div>}
+                  {trackPutts && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{calculateTotal(putts, 0, 9)}</div>}
+                  {trackGame && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}></div>}
                   {courseData.slice(9, 18).map((hole, i) => renderRow(hole, i + 9))}
                   <div style={{ ...summaryCellStyle }}>INN</div>
                   <div style={summaryCellStyle}>{courseData.slice(9, 18).reduce((sum, h) => sum + h.par, 0)}</div>
                   {trackScore && <div style={summaryCellStyle}>{calculateTotal(scores, 9, 18)}</div>}
                   {trackPutts && <div style={summaryCellStyle}>{calculateTotal(putts, 9, 18)}</div>}
                   {trackGame && <div style={{ ...summaryCellStyle }}></div>}
-                  <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}>TOT</div>
-                  <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}>{courseData.reduce((sum, h) => sum + h.par, 0)}</div>
-                  {trackScore && <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}>{calculateTotal(scores, 0, 18)}</div>}
-                  {trackPutts && <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}>{calculateTotal(putts, 0, 18)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, backgroundColor: '#dff0e4', borderBottom: 'none' }}></div>}
+                  <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>TOT</div>
+                  <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{courseData.reduce((sum, h) => sum + h.par, 0)}</div>
+                  {trackScore && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{calculateTotal(scores, 0, 18)}</div>}
+                  {trackPutts && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{calculateTotal(putts, 0, 18)}</div>}
+                  {trackGame && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}></div>}
                 </div>
               </div>
             </div>
 
             {trackGame && matchPlayResult && (
-              <div style={{ padding: '20px', background: 'transparent', border: `2px solid ${theme.darkGreen}`, borderRadius: theme.radius, marginBottom: '25px', textAlign: 'center', fontWeight: 'bold', fontSize: '1.2rem', color: theme.darkGreen }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1rem', color: theme.darkGreen, textTransform: 'uppercase', letterSpacing: '1px' }}>Niðurstaða leiks</h3>
+              <div style={{ padding: '20px', background: 'transparent', border: `2px solid ${theme.scLine}`, borderRadius: theme.radius, marginBottom: '25px', textAlign: 'center', fontWeight: 'bold', fontSize: '1.2rem', color: theme.scText }}>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1rem', color: theme.scText, textTransform: 'uppercase', letterSpacing: '1px' }}>Niðurstaða leiks</h3>
                 {matchPlayResult}
               </div>
             )}
@@ -962,9 +994,9 @@ export default function App() {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%', marginBottom: '20px' }}>
               <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
                 <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
-                <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', borderColor: '#4A90E2' }}>Opna í PiP</button>
+                <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2' }}>Opna í PiP</button>
               </div>
-              <button onClick={openGolfBox} style={{ ...actionBtnStyle, background: theme.darkGreen, color: '#fff', borderColor: theme.darkGreen, width: '100%', flex: 'none' }}>
+              <button onClick={openGolfBox} style={{ ...actionBtnStyle, background: theme.darkGreen, color: '#fff', border: `2px solid ${theme.darkGreen}`, width: '100%', flex: 'none' }}>
                 Skrá skor í GolfBox
               </button>
             </div>
