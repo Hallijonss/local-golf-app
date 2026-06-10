@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "bake:greens": "node scripts/bakeGreens.mjs",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
     "lint": "eslint .",
@@ -35,6 +36,7 @@
     "geotiff": "^3.0.5",
     "gh-pages": "^6.3.0",
     "globals": "^15.11.0",
+    "polylabel": "^2.0.1",
     "proj4": "^2.20.9",
     "vite": "^5.4.10"
   }

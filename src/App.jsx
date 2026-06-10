@@ -2,14 +2,19 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { courseData } from './courseData';
 import { greenData } from './greenData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
-import { MapContainer, Marker, useMapEvents, Polyline, useMap, TileLayer } from 'react-leaflet';
+import { MapContainer, Marker, useMapEvents, Polyline, Polygon, Circle, useMap, TileLayer } from 'react-leaflet';
 import L from 'leaflet';
 import { divIcon } from 'leaflet';
 import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff, X } from 'lucide-react';
 
 import 'leaflet/dist/leaflet.css';
-import 'leaflet-rotate'; 
+import 'leaflet-rotate';
 import easterEggImg from './assets/easter-egg.png';
+
+// Draws the traced green polygons so trace accuracy can be checked on the phone.
+// Verification only — flip to false for the final product. The polygon DATA is
+// still used for front/back calculations regardless of this flag.
+const SHOW_GREEN_OUTLINES = true;
 
 // --- DESIGN TOKENS ---
 const baseTheme = {
@@ -136,10 +141,16 @@ function MapEvents({ setTargetPoint }) {
 }
 
 // --- ICONS ---
+// Pin-accurate flag: the dot's CENTRE sits exactly on greenLocation; the stick
+// and rectangular flag rise upward only, so it barely overlaps nearby chips.
 const greenIcon = divIcon({
   className: '',
-  html: `<div style="background-color: ${baseTheme.ink}; width: 22px; height: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: white; border: 2px solid white; box-shadow: 0 1px 5px rgba(0,0,0,0.4);">⚑</div>`,
-  iconSize: [22, 22], iconAnchor: [11, 11]
+  html: `<svg width="20" height="28" viewBox="0 0 20 28" style="display:block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.55));">
+      <line x1="10" y1="23" x2="10" y2="4" stroke="#ffffff" stroke-width="2" stroke-linecap="round" />
+      <rect x="10" y="4" width="9" height="6" fill="${baseTheme.ink}" stroke="#ffffff" stroke-width="1" stroke-linejoin="round" />
+      <circle cx="10" cy="23" r="4" fill="${baseTheme.ink}" stroke="#ffffff" stroke-width="2" />
+    </svg>`,
+  iconSize: [20, 28], iconAnchor: [10, 23]
 });
 
 const userIcon = divIcon({
@@ -155,27 +166,60 @@ const targetIcon = divIcon({
   iconSize: [20, 20], iconAnchor: [10, 10]
 });
 
-// Distance chip centred on a point (green front/back, and the line midpoints).
-// `c` carries the mode colours { bg, fg, border }.
-const createChip = (distance, c) => divIcon({
+// Boxless distance label centred on a point (green front/back + line midpoints).
+// Theme-independent: always white bold numerals with a dark halo for legibility
+// over the satellite imagery — no background/border.
+const createChip = (distance) => divIcon({
   className: '',
-  html: `<div style="display: inline-block; transform: translate(-50%, -50%); background: ${c.bg}; color: ${c.fg}; padding: 1px 6px; border-radius: 3px; border: 1px solid ${c.border}; font-family: ${baseTheme.num}; font-size: 12px; font-weight: 600; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.45);">${distance}</div>`,
+  html: `<div style="display: inline-block; transform: translate(-50%, -50%); color: #fff; font-family: ${baseTheme.num}; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 2px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9);">${distance}</div>`,
   iconSize: [0, 0], iconAnchor: [0, 0]
 });
 
 // --- FRONT/BACK OF GREEN ---
 // Beyond this distance the green is too far to bother showing front/back.
 const MAX_FB_DISTANCE = 300;
-// Nearest (front) and farthest (back) green-edge point from `from`, plus their
-// distances. Returns null if there's nothing to measure.
-const frontBackFrom = (from, points) => {
-  if (!from || !points || points.length === 0) return null;
+// Where the play line (from `from` through `green`) crosses the green polygon:
+// front = nearest crossing, back = farthest. Returns the crossing points (lat/lng)
+// and the unrounded distances from `from`. Falls back to nearest/farthest polygon
+// vertex when the ray gives fewer than two crossings (e.g. measured from inside).
+const frontBackOnLine = (from, green, polygon) => {
+  if (!from || !green || !polygon || polygon.length < 2) return null;
+  const mx = 111320 * Math.cos(green.lat * Math.PI / 180), my = 110540;
+  const toXY = (p) => ({ x: (p.lng - green.lng) * mx, y: (p.lat - green.lat) * my });
+  const toLL = (x, y) => ({ lat: green.lat + y / my, lng: green.lng + x / mx });
+
+  const F = toXY(from);
+  const rx = -F.x, ry = -F.y; // ray direction: from `from` toward the green centre (origin)
+  const hits = [];
+  const n = polygon.length;
+  for (let i = 0; i < n; i++) {
+    const A = toXY(polygon[i]);
+    const B = toXY(polygon[(i + 1) % n]); // wrap to close the ring
+    const ex = B.x - A.x, ey = B.y - A.y;
+    const denom = rx * ey - ry * ex;
+    if (denom === 0) continue;
+    const afx = A.x - F.x, afy = A.y - F.y;
+    const t = (afx * ey - afy * ex) / denom; // ray param (>0 ahead of `from`)
+    const s = (afx * ry - afy * rx) / denom; // edge param (0..1 on the edge)
+    if (t > 1e-9 && s >= 0 && s <= 1) {
+      const px = F.x + t * rx, py = F.y + t * ry;
+      hits.push({ t, dist: Math.hypot(px - F.x, py - F.y), pt: toLL(px, py) });
+    }
+  }
+  if (hits.length >= 2) {
+    hits.sort((a, b) => a.t - b.t);
+    const f = hits[0], b = hits[hits.length - 1];
+    return { frontPt: f.pt, backPt: b.pt, front: f.dist, back: b.dist };
+  }
+
+  // Fallback: nearest / farthest polygon vertex from `from`.
   let frontPt = null, backPt = null, front = Infinity, back = -Infinity;
-  for (const p of points) {
+  for (const p of polygon) {
     const d = calculateDistanceInMeters(from.lat, from.lng, p.lat, p.lng);
     if (d < front) { front = d; frontPt = p; }
     if (d > back) { back = d; backPt = p; }
   }
+  if (!frontPt) return null;
   return { frontPt, backPt, front, back };
 };
 
@@ -289,8 +333,7 @@ export default function App() {
     background: theme.panel, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
     border: `1px solid ${theme.hairLight}`, boxShadow: theme.panelShadow, color: theme.panelText,
   }), [theme]);
-  const chip = theme.chip;
-  
+
   const [hideEasterEgg, setHideEasterEgg] = useState(false);
 
   const [gpsLocation, setGpsLocation] = useState(null);
@@ -574,15 +617,16 @@ export default function App() {
   if (targetPoint) distanceTargetToGreen = calculateDistanceInMeters(targetPoint.lat, targetPoint.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
   if (activeLocation) mapBearing = -calculateBearing(activeLocation.lat, activeLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
 
-  // Front/back of green. Computed from the player for the pill, and from the
-  // aimed-at waypoint for the floating on-green labels. Hidden beyond 300m.
-  const holePoints = greenData[currentHoleIndex] ? greenData[currentHoleIndex].points : null;
-  // Front/back shown as outline chips on the green, measured from the aimed-at
-  // waypoint if one is placed, otherwise from the player. Complex view, <=300m.
+  // Current hole's traced green (polygon + aim point).
+  const greenInfo = greenData[currentHoleIndex] || null;
+  const holePolygon = greenInfo ? greenInfo.polygon : null;
+  // Front/back chips sit where the play line crosses the green edge, measured
+  // from the aimed-at waypoint if one is placed, otherwise the player/tee.
+  // Complex view only, <=300m.
   const fbFrom = targetPoint || userLocation;
   const fbDist = targetPoint ? distanceTargetToGreen : distanceUserToGreen;
   const greenFB = (!simpleView && fbFrom && fbDist !== null && fbDist <= MAX_FB_DISTANCE)
-    ? frontBackFrom(fbFrom, holePoints) : null;
+    ? frontBackOnLine(fbFrom, currentHole.greenLocation, holePolygon) : null;
 
   // Wind direction relative to the line of play: 0° = tailwind (blows toward green),
   // 180° = headwind. Used to rotate the wind arrow in the play-up map frame.
@@ -616,14 +660,14 @@ export default function App() {
   }
   const showPlaysLike = !simpleView && playsLike !== null;
 
-  // Memoised chip divIcons — rebuilt only when their displayed number or the
-  // theme chip colours change, so standing still doesn't churn marker DOM.
-  const fbFront = greenFB ? greenFB.front : null;
-  const fbBack = greenFB ? greenFB.back : null;
-  const greenFrontChip = useMemo(() => (fbFront !== null ? createChip(fbFront, chip) : null), [fbFront, chip]);
-  const greenBackChip = useMemo(() => (fbBack !== null ? createChip(fbBack, chip) : null), [fbBack, chip]);
-  const toTargetChip = useMemo(() => (distanceUserToTarget !== null ? createChip(distanceUserToTarget, chip) : null), [distanceUserToTarget, chip]);
-  const targetToGreenChip = useMemo(() => (distanceTargetToGreen !== null ? createChip(distanceTargetToGreen, chip) : null), [distanceTargetToGreen, chip]);
+  // Memoised label divIcons — rebuilt only when their displayed number changes,
+  // so standing still doesn't churn marker DOM. (Labels are theme-independent.)
+  const fbFront = greenFB ? Math.round(greenFB.front) : null;
+  const fbBack = greenFB ? Math.round(greenFB.back) : null;
+  const greenFrontChip = useMemo(() => (fbFront !== null ? createChip(fbFront) : null), [fbFront]);
+  const greenBackChip = useMemo(() => (fbBack !== null ? createChip(fbBack) : null), [fbBack]);
+  const toTargetChip = useMemo(() => (distanceUserToTarget !== null ? createChip(distanceUserToTarget) : null), [distanceUserToTarget]);
+  const targetToGreenChip = useMemo(() => (distanceTargetToGreen !== null ? createChip(distanceTargetToGreen) : null), [distanceTargetToGreen]);
 
   if (activeLocation && currentHole.greenLocation) {
     initialBounds = [
@@ -814,6 +858,18 @@ export default function App() {
             maxNativeZoom={21}
             className="punchy-map-tiles"
           />
+
+          {/* Traced green outline — verification only (SHOW_GREEN_OUTLINES).
+              Under markers; non-interactive so taps pass through. */}
+          {SHOW_GREEN_OUTLINES && holePolygon && (
+            <Polygon positions={holePolygon} interactive={false}
+              pathOptions={{ color: 'white', weight: 1.5, opacity: 0.75, fill: true, fillColor: 'white', fillOpacity: 0.05 }} />
+          )}
+          {/* Largest-inscribed-circle "safe aim" — faint dashed outline, complex view only */}
+          {!simpleView && greenInfo && greenInfo.aim && (
+            <Circle center={[greenInfo.aim.lat, greenInfo.aim.lng]} radius={greenInfo.aimRadius} interactive={false}
+              pathOptions={{ color: 'white', weight: 1, opacity: 0.5, fillOpacity: 0, dashArray: '4 6' }} />
+          )}
 
           <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={greenIcon} rotateWithView={false} />
           {/* Front/back chips on the green (from waypoint if aiming, else player) */}
