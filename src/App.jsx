@@ -3,7 +3,6 @@ import { courseData } from './courseData';
 import { greenData } from './greenData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
 import { MapContainer, Marker, useMapEvents, Polyline, Polygon, Circle, useMap, TileLayer } from 'react-leaflet';
-import L from 'leaflet';
 import { divIcon } from 'leaflet';
 import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff, X } from 'lucide-react';
 
@@ -14,7 +13,7 @@ import easterEggImg from './assets/easter-egg.png';
 // Draws the traced green polygons so trace accuracy can be checked on the phone.
 // Verification only — flip to false for the final product. The polygon DATA is
 // still used for front/back calculations regardless of this flag.
-const SHOW_GREEN_OUTLINES = true;
+const SHOW_GREEN_OUTLINES = false;
 
 // --- DESIGN TOKENS ---
 const baseTheme = {
@@ -60,54 +59,95 @@ const offsetLatLng = (lat, lng, bearingDeg, dist) => {
   return { lat: p2 * 180 / Math.PI, lng: l2 * 180 / Math.PI };
 };
 
+// --- FRAMING TUNING KNOBS (tweak by number; no code knowledge needed) ---
+const RAIL_SKEW_PX = 44;     // how far the hole slides left (px). Smaller = more centered.
+const FRAME_TOP_PX = 6;      // extra gap between the top pills and the back of green (px).
+const FRAME_BOTTOM_PX = 4;   // extra gap between the player/tee and the bottom UI (px).
+
 // --- MAP HELPER COMPONENTS ---
-function MapCameraTracker({ startLoc, greenLoc, centerTrigger, currentHoleIndex, isTeeView, footerH }) {
+function MapCameraTracker({ startLoc, greenLoc, polygon, centerTrigger, currentHoleIndex, isTeeView, topInsetPx, bottomInsetPx }) {
   const map = useMap();
+  // Latest geometry via refs so the camera only re-solves on the trigger deps
+  // below (recenter / hole / view / inset / resize), never on every GPS tick.
+  const startRef = useRef(startLoc); startRef.current = startLoc;
+  const greenRef = useRef(greenLoc); greenRef.current = greenLoc;
+  const polyRef = useRef(polygon); polyRef.current = polygon;
 
   useEffect(() => {
     const updateView = () => {
-      if (!startLoc || !greenLoc) return;
-
+      const start = startRef.current, green = greenRef.current, poly = polyRef.current;
+      if (!start || !green) return;
       const mapSize = map.getSize();
       if (mapSize.y === 0) return;
 
-      const centerRatio = 38 / 62;
-      const centerLat = greenLoc.lat + (startLoc.lat - greenLoc.lat) * centerRatio;
-      const centerLng = greenLoc.lng + (startLoc.lng - greenLoc.lng) * centerRatio;
+      const playBearing = calculateBearing(start.lat, start.lng, green.lat, green.lng);
+      // Local metre projection around the green; unit vector along the play line.
+      const mx = 111320 * Math.cos(green.lat * Math.PI / 180), my = 110540;
+      const toXY = (p) => ({ x: (p.lng - green.lng) * mx, y: (p.lat - green.lat) * my });
+      const S = toXY(start);
+      const dlen = Math.hypot(S.x, S.y) || 1;
+      const ux = -S.x / dlen, uy = -S.y / dlen; // points start -> green
 
-      const pt1 = L.latLng(startLoc.lat, startLoc.lng);
-      const pt2 = L.latLng(greenLoc.lat, greenLoc.lng);
-      const distanceMeters = pt1.distanceTo(pt2);
-
-      if (distanceMeters > 0) {
-        // Fit the tee->green span into the space NOT covered by the footer, so
-        // both ends stay framed even when the scoring footer is tall.
-        const usableH = mapSize.y - footerH;
-        const targetPixels = usableH * 0.66;
-        const metersPerPixel = distanceMeters / targetPixels;
-        const initialResolution = 156543.03392;
-        const latRad = centerLat * (Math.PI / 180);
-        let targetZoom = Math.log2((initialResolution * Math.cos(latRad)) / metersPerPixel);
-        if (targetZoom > 21) targetZoom = 21;
-        if (targetZoom < 5) targetZoom = 5;
-        // Left-skew so the right info rail stays clear; push the green below the
-        // PAR pill, but lift the framing when a tall footer is shown so the tee
-        // /player clears it.
-        const playBearing = calculateBearing(startLoc.lat, startLoc.lng, greenLoc.lat, greenLoc.lng);
-        let c = offsetLatLng(centerLat, centerLng, playBearing + 90, mapSize.x * 0.08 * metersPerPixel);
-        const downPx = mapSize.y * 0.09 - footerH * 0.6;
-        c = offsetLatLng(c.lat, c.lng, playBearing, downPx * metersPerPixel);
-        map.setView([c.lat, c.lng], targetZoom, { animate: false });
+      // Back edge of the green: the polygon vertex farthest along the play line.
+      let backPoint, spanMeters;
+      if (poly && poly.length) {
+        let maxProj = -Infinity, bx = 0, by = 0;
+        for (const p of poly) {
+          const q = toXY(p);
+          const proj = (q.x - S.x) * ux + (q.y - S.y) * uy;
+          if (proj > maxProj) { maxProj = proj; bx = q.x; by = q.y; }
+        }
+        spanMeters = maxProj;
+        backPoint = { lat: green.lat + by / my, lng: green.lng + bx / mx };
+      } else {
+        backPoint = offsetLatLng(green.lat, green.lng, playBearing, 12);
+        const bq = toXY(backPoint);
+        spanMeters = (bq.x - S.x) * ux + (bq.y - S.y) * uy;
       }
+      if (!(spanMeters > 0)) return;
+
+      const usablePx = Math.max(50, mapSize.y - topInsetPx - bottomInsetPx);
+      const mpp = spanMeters / usablePx;
+      const centerLatRad = green.lat * Math.PI / 180;
+      let zoom = Math.log2((156543.03392 * Math.cos(centerLatRad)) / mpp);
+      zoom = Math.max(5, Math.min(21, zoom));
+
+      // Screen centre lies on the play line, fraction f from backPoint -> start,
+      // so the back edge lands at topInsetPx and the player/tee at the bottom inset.
+      const f = (mapSize.y / 2 - topInsetPx) / usablePx;
+      const center = {
+        lat: backPoint.lat + f * (start.lat - backPoint.lat),
+        lng: backPoint.lng + f * (start.lng - backPoint.lng),
+      };
+      const c = offsetLatLng(center.lat, center.lng, playBearing + 90, RAIL_SKEW_PX * mpp);
+      map.setView([c.lat, c.lng], zoom, { animate: false });
     };
 
     updateView();
-    const timer = setTimeout(() => { map.invalidateSize(); updateView(); }, 500);
-    map.on('resize', updateView);
-    return () => { clearTimeout(timer); map.off('resize', updateView); };
-  }, [map, centerTrigger, currentHoleIndex, isTeeView, footerH]);
+    // Re-solve on container resize (replaces the old 500ms invalidateSize hack).
+    const ro = new ResizeObserver(() => { map.invalidateSize(); updateView(); });
+    ro.observe(map.getContainer());
+    return () => ro.disconnect();
+  }, [map, centerTrigger, currentHoleIndex, isTeeView, topInsetPx, bottomInsetPx]);
 
   return null;
+}
+
+// A white play-line segment with a gap around its midpoint so a distance label
+// sits in a clean break. Falls back to a single line for very short segments.
+function BrokenPolyline({ a, b, meters }) {
+  if (!a || !b) return null;
+  const opts = { color: 'white', weight: 2 };
+  const gap = Math.min(30, Math.max(12, (meters || 0) * 0.20));
+  const hf = meters > 0 ? (gap / 2) / meters : 0;
+  if (hf >= 0.45) return <Polyline positions={[[a.lat, a.lng], [b.lat, b.lng]]} pathOptions={opts} />;
+  const lerp = (t) => [a.lat + (b.lat - a.lat) * t, a.lng + (b.lng - a.lng) * t];
+  return (
+    <>
+      <Polyline positions={[[a.lat, a.lng], lerp(0.5 - hf)]} pathOptions={opts} />
+      <Polyline positions={[lerp(0.5 + hf), [b.lat, b.lng]]} pathOptions={opts} />
+    </>
+  );
 }
 
 function MapRotationManager({ bearing, centerTrigger, currentHoleIndex, isTeeView }) {
@@ -141,14 +181,14 @@ function MapEvents({ setTargetPoint }) {
 }
 
 // --- ICONS ---
-// Pin-accurate flag: the dot's CENTRE sits exactly on greenLocation; the stick
-// and rectangular flag rise upward only, so it barely overlaps nearby chips.
+// Pin-accurate flag: a small hollow white ring whose CENTRE sits exactly on
+// greenLocation; the stick and rectangular flag rise upward only.
 const greenIcon = divIcon({
   className: '',
   html: `<svg width="20" height="28" viewBox="0 0 20 28" style="display:block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.55));">
       <line x1="10" y1="23" x2="10" y2="4" stroke="#ffffff" stroke-width="2" stroke-linecap="round" />
       <rect x="10" y="4" width="9" height="6" fill="${baseTheme.ink}" stroke="#ffffff" stroke-width="1" stroke-linejoin="round" />
-      <circle cx="10" cy="23" r="4" fill="${baseTheme.ink}" stroke="#ffffff" stroke-width="2" />
+      <circle cx="10" cy="23" r="3" fill="none" stroke="#ffffff" stroke-width="2" />
     </svg>`,
   iconSize: [20, 28], iconAnchor: [10, 23]
 });
@@ -159,19 +199,23 @@ const userIcon = divIcon({
   iconSize: [18, 18], iconAnchor: [9, 9]
 });
 
-// Plain aiming dot (the distances now live on the line midpoints as chips).
+// Aiming marker: a hollow white ring with a small white centre dot (distances
+// live on the line midpoints as chips). Drop-shadow keeps it readable on imagery.
 const targetIcon = divIcon({
   className: '',
-  html: `<div style="width: 15px; height: 15px; border: 3px solid white; border-radius: 50%; background: ${baseTheme.ink}; box-shadow: 0 1px 4px rgba(0,0,0,0.5);"></div>`,
+  html: `<svg width="20" height="20" viewBox="0 0 20 20" style="display:block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));">
+      <circle cx="10" cy="10" r="7" fill="none" stroke="#ffffff" stroke-width="2" />
+      <circle cx="10" cy="10" r="2" fill="#ffffff" />
+    </svg>`,
   iconSize: [20, 20], iconAnchor: [10, 10]
 });
 
 // Boxless distance label centred on a point (green front/back + line midpoints).
 // Theme-independent: always white bold numerals with a dark halo for legibility
 // over the satellite imagery — no background/border.
-const createChip = (distance) => divIcon({
+const createChip = (distance, size = 13) => divIcon({
   className: '',
-  html: `<div style="display: inline-block; transform: translate(-50%, -50%); color: #fff; font-family: ${baseTheme.num}; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 2px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9);">${distance}</div>`,
+  html: `<div style="display: inline-block; transform: translate(-50%, -50%); color: #fff; font-family: ${baseTheme.num}; font-size: ${size}px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 2px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9);">${distance}</div>`,
   iconSize: [0, 0], iconAnchor: [0, 0]
 });
 
@@ -355,6 +399,12 @@ export default function App() {
   const videoRef = useRef(null);
   const loginFormRef = useRef(null);
 
+  // Measured UI insets (px) so the camera frames exactly above/below the chrome.
+  const topPillRef = useRef(null);
+  const footerRef = useRef(null);
+  const navRef = useRef(null);
+  const [insets, setInsets] = useState({ top: 64, bottom: 56 });
+
   const currentHole = courseData[currentHoleIndex] || courseData[0];
 
   // --- ELEVATION ---
@@ -375,10 +425,10 @@ export default function App() {
     let cancelled = false;
     const fetchWind = async () => {
       try {
-        const r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=64.1678&longitude=-21.7357&current=wind_speed_10m,wind_direction_10m&wind_speed_unit=ms');
+        const r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=64.1678&longitude=-21.7357&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m&wind_speed_unit=ms');
         if (!r.ok) return;
         const j = await r.json();
-        if (!cancelled && j.current) setWind({ speed: j.current.wind_speed_10m, fromDeg: j.current.wind_direction_10m });
+        if (!cancelled && j.current) setWind({ speed: j.current.wind_speed_10m, fromDeg: j.current.wind_direction_10m, gust: j.current.wind_gusts_10m, tempC: j.current.temperature_2m });
       } catch { /* wind is non-critical; ignore failures (e.g. offline) */ }
     };
     fetchWind();
@@ -641,20 +691,32 @@ export default function App() {
   const showWind = !simpleView && wind && windRelAngle !== null;
   const showElev = !simpleView && elevRounded !== null;
 
-  // "Plays like" — the green distance adjusted for slope and the head/tail wind
-  // component. Slope is 1:1 (uphill plays longer). Wind uses only the along-shot
-  // component (crosswind cancels via cosine); a headwind hurts ~2x what a tailwind
-  // helps, scaled by the shot length. Pressure is ignored — the raw distance is
-  // already the Mosfellsbær baseline. Only shown within range (<=300m).
+  // "Plays like" — the green distance adjusted for the conditions. Each term is
+  // independently optional (no NaN when wind/temp is missing):
+  //  • SLOPE: rise / tan(descent angle). The ball lands steeper on short shots
+  //    (so elevation matters less) and shallower on long ones (matters more):
+  //    descentDeg = clamp-down from 52° to a 36° floor as distance grows.
+  //  • WIND: only the along-shot component (crosswind cancels via cosine). Headwind
+  //    lengthens at ~1.5%/(m·s⁻¹), mildly superlinear with speed; tailwind shortens
+  //    at ~0.75%/(m·s⁻¹).
+  //  • TEMPERATURE (air density): cold air is denser → plays longer, ~0.12%/°C
+  //    relative to a 20°C baseline.
   let playsLike = null;
   if (distanceUserToGreen !== null && distanceUserToGreen <= MAX_FB_DISTANCE) {
     let adj = 0;
-    if (elevationDiff !== null) adj += elevationDiff; // uphill (+) plays longer
+    if (elevationDiff !== null) {
+      const descentDeg = Math.max(36, 52 - 0.06 * distanceUserToGreen);
+      adj += elevationDiff / Math.tan(descentDeg * Math.PI / 180); // uphill (+) plays longer
+    }
     if (wind && windRelAngle !== null) {
       const tail = wind.speed * Math.cos(windRelAngle * Math.PI / 180); // + tailwind, - headwind
       adj += tail >= 0
-        ? -distanceUserToGreen * tail * 0.0075   // tailwind shortens (~0.75%/m·s⁻¹)
-        : -distanceUserToGreen * tail * 0.015;   // headwind lengthens (~1.5%/m·s⁻¹)
+        ? -distanceUserToGreen * tail * 0.0075                       // tailwind shortens
+        : -distanceUserToGreen * tail * (0.015 + 0.0004 * wind.speed); // headwind lengthens (superlinear)
+    }
+    if (wind && wind.tempC != null) {
+      const t = Math.max(-15, Math.min(30, wind.tempC));
+      adj += distanceUserToGreen * (20 - t) * 0.0012;                // cold air plays longer
     }
     playsLike = Math.round(distanceUserToGreen + adj);
   }
@@ -666,8 +728,8 @@ export default function App() {
   const fbBack = greenFB ? Math.round(greenFB.back) : null;
   const greenFrontChip = useMemo(() => (fbFront !== null ? createChip(fbFront) : null), [fbFront]);
   const greenBackChip = useMemo(() => (fbBack !== null ? createChip(fbBack) : null), [fbBack]);
-  const toTargetChip = useMemo(() => (distanceUserToTarget !== null ? createChip(distanceUserToTarget) : null), [distanceUserToTarget]);
-  const targetToGreenChip = useMemo(() => (distanceTargetToGreen !== null ? createChip(distanceTargetToGreen) : null), [distanceTargetToGreen]);
+  const toTargetChip = useMemo(() => (distanceUserToTarget !== null ? createChip(distanceUserToTarget, 18) : null), [distanceUserToTarget]);
+  const targetToGreenChip = useMemo(() => (distanceTargetToGreen !== null ? createChip(distanceTargetToGreen, 18) : null), [distanceTargetToGreen]);
 
   if (activeLocation && currentHole.greenLocation) {
     initialBounds = [
@@ -786,11 +848,28 @@ export default function App() {
   };
 
   const showFooter = trackScore || trackPutts || trackGame;
-  // Approx height the scoring footer occupies at the bottom, so the camera can
-  // keep the tee/player framed above it.
-  const footerH = showFooter
-    ? 30 + ((trackScore || trackPutts) ? 56 : 0) + (trackGame ? 48 : 0) + 10
-    : 0;
+
+  // Measure the real UI insets so framing is exact, not estimated. Top inset =
+  // the top pill's offset + height + margin. Bottom inset = the gap from the
+  // viewport bottom up to the highest of the footer / prev-next button row.
+  useEffect(() => {
+    const measure = () => {
+      const pill = topPillRef.current;
+      const top = pill ? pill.offsetTop + pill.offsetHeight + FRAME_TOP_PX : 64;
+      const vh = window.innerHeight;
+      let obstructionTop = Infinity;
+      if (footerRef.current) obstructionTop = Math.min(obstructionTop, footerRef.current.getBoundingClientRect().top);
+      if (navRef.current) obstructionTop = Math.min(obstructionTop, navRef.current.getBoundingClientRect().top);
+      const bottom = obstructionTop === Infinity ? 0 : Math.max(0, vh - obstructionTop + FRAME_BOTTOM_PX);
+      setInsets((prev) => (prev.top === top && prev.bottom === bottom) ? prev : { top, bottom });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (footerRef.current) ro.observe(footerRef.current);
+    if (navRef.current) ro.observe(navRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, [showFooter, trackScore, trackPutts, trackGame]);
 
   const actionBtnStyle = {
     flex: 1, padding: '15px 5px', background: 'transparent', border: `2px solid ${theme.scLine}`, borderRadius: theme.radius,
@@ -847,7 +926,7 @@ export default function App() {
       {/* FULL-SCREEN MAP WITH LAYER STACKING */}
       <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
         <MapContainer bounds={initialBounds} doubleClickZoom={false} zoomControl={false} rotateControl={false} zoomSnap={0} maxZoom={22} rotate={true} style={{ width: '100%', height: '100%' }}>
-          <MapCameraTracker startLoc={activeLocation} greenLoc={currentHole.greenLocation} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} footerH={footerH} />
+          <MapCameraTracker startLoc={activeLocation} greenLoc={currentHole.greenLocation} polygon={holePolygon} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} topInsetPx={insets.top} bottomInsetPx={insets.bottom} />
           <MapRotationManager bearing={mapBearing} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} />
           <MapEvents setTargetPoint={setTargetPoint} />
 
@@ -885,13 +964,13 @@ export default function App() {
             <Marker position={[(targetPoint.lat + currentHole.greenLocation.lat) / 2, (targetPoint.lng + currentHole.greenLocation.lng) / 2]} icon={targetToGreenChip} rotateWithView={false} />
           )}
           {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
-          {userLocation && targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [targetPoint.lat, targetPoint.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
-          {targetPoint && <Polyline positions={[[targetPoint.lat, targetPoint.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
+          {userLocation && targetPoint && <BrokenPolyline a={userLocation} b={targetPoint} meters={distanceUserToTarget} />}
+          {targetPoint && <BrokenPolyline a={targetPoint} b={currentHole.greenLocation} meters={distanceTargetToGreen} />}
         </MapContainer>
       </div>
 
       {/* FLOATING TOP BAR - LEFT PILL */}
-      <div style={{ ...topPillStyle, left: '15px', gap: '8px' }}>
+      <div ref={topPillRef} style={{ ...topPillStyle, left: '15px', gap: '8px' }}>
         <span style={{ ...microLabel }}>Hola</span>
         <span className="num" style={{ fontSize: '1.3rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.hole}</span>
         <span style={{ width: '1px', height: '16px', background: theme.hairLight }} />
@@ -955,6 +1034,10 @@ export default function App() {
                   <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '0.72rem', lineHeight: 1 }}>↑</span>
                 </span>
                 <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.85 }}>{Math.round(wind.speed)}</span>
+                {/* Gust as a smaller secondary number, only when meaningfully gustier */}
+                {wind.gust != null && (wind.gust - wind.speed) >= 4 && (
+                  <span className="num" style={{ fontSize: '0.8em', fontWeight: 700, lineHeight: 0.85, opacity: 0.75 }}>/{Math.round(wind.gust)}</span>
+                )}
               </div>
             )}
             {showWind && showElev && <span style={{ width: '1px', alignSelf: 'stretch', background: theme.hairLight }} />}
@@ -968,7 +1051,7 @@ export default function App() {
       </div>
 
       {/* MAP CONTROLS - PREV / NEXT */}
-      <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
+      <div ref={navRef} style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
         <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ ...cardStyle,padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
           Fyrri
         </button>
@@ -981,8 +1064,8 @@ export default function App() {
 
       {/* UNIFIED SCORING & LEIKUR FOOTER */}
       {showFooter && (
-        <div style={{ 
-          position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '50%', transform: 'translateX(-50%)', 
+        <div ref={footerRef} style={{
+          position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '50%', transform: 'translateX(-50%)',
           zIndex: 1000, width: '92%', maxWidth: '380px', display: 'flex', flexDirection: 'column',
           ...cardStyle, borderRadius: theme.radius,
           overflow: 'hidden'
