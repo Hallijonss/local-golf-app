@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { courseData } from './courseData';
 import { greenData } from './greenData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
@@ -6,7 +6,6 @@ import { MapContainer, Marker, useMapEvents, Polyline, useMap, TileLayer } from 
 import L from 'leaflet';
 import { divIcon } from 'leaflet';
 import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff, X } from 'lucide-react';
-import html2canvas from 'html2canvas';
 
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-rotate'; 
@@ -108,8 +107,12 @@ function MapCameraTracker({ startLoc, greenLoc, centerTrigger, currentHoleIndex,
 
 function MapRotationManager({ bearing, centerTrigger, currentHoleIndex, isTeeView }) {
   const map = useMap();
+  // Rotation should only update on recenter / hole / view changes, not on every
+  // bearing tick — so read the latest bearing from a ref instead of depending on it.
+  const bearingRef = useRef(bearing);
+  bearingRef.current = bearing;
   useEffect(() => {
-    if (typeof map.setBearing === 'function') map.setBearing(bearing);
+    if (typeof map.setBearing === 'function') map.setBearing(bearingRef.current);
   }, [map, centerTrigger, currentHoleIndex, isTeeView]);
   return null;
 }
@@ -133,7 +136,7 @@ function MapEvents({ setTargetPoint }) {
 }
 
 // --- ICONS ---
-const createGreenIcon = () => divIcon({
+const greenIcon = divIcon({
   className: '',
   html: `<div style="background-color: ${baseTheme.ink}; width: 22px; height: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: white; border: 2px solid white; box-shadow: 0 1px 5px rgba(0,0,0,0.4);">⚑</div>`,
   iconSize: [22, 22], iconAnchor: [11, 11]
@@ -241,62 +244,65 @@ const MatchToggleBtn = ({ label, value, selected, onClick, theme }) => (
   </div>
 );
 
+// Safe localStorage read: parses JSON, returns fallback on missing/invalid.
+const loadJSON = (key, fallback) => {
+  try {
+    const v = JSON.parse(localStorage.getItem(key));
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+};
+// A valid 18-length round array, else the given empty round.
+const loadRound = (key, fill) => {
+  const v = loadJSON(key, null);
+  return (Array.isArray(v) && v.length === 18) ? v : Array(18).fill(fill);
+};
+
 // --- MAIN APP ---
 export default function App() {
   const [currentHoleIndex, setCurrentHoleIndex] = useState(() => {
-    const savedHole = localStorage.getItem('currentHoleIndex');
-    return savedHole !== null ? parseInt(savedHole, 10) : 0;
+    const saved = localStorage.getItem('currentHoleIndex');
+    const n = saved !== null ? parseInt(saved, 10) : 0;
+    return Number.isNaN(n) ? 0 : Math.min(17, Math.max(0, n));
   });
-  
-  const [scores, setScores] = useState(() => JSON.parse(localStorage.getItem('myScores')) || Array(18).fill(0));
-  const [putts, setPutts] = useState(() => JSON.parse(localStorage.getItem('myPutts')) || Array(18).fill(0));
-  const [matchPlay, setMatchPlay] = useState(() => JSON.parse(localStorage.getItem('myMatch')) || Array(18).fill(''));
+
+  const [scores, setScores] = useState(() => loadRound('myScores', 0));
+  const [putts, setPutts] = useState(() => loadRound('myPutts', 0));
+  const [matchPlay, setMatchPlay] = useState(() => loadRound('myMatch', ''));
   
   const [gbUser, setGbUser] = useState(() => localStorage.getItem('gbUser') || '');
   const [gbPass, setGbPass] = useState(() => localStorage.getItem('gbPass') || '');
   const [showLoginModal, setShowLoginModal] = useState(false);
 
-  const [trackScore, setTrackScore] = useState(() => {
-    const saved = localStorage.getItem('trackScore');
-    return saved !== null ? JSON.parse(saved) : true;
-  });
-  const [trackPutts, setTrackPutts] = useState(() => JSON.parse(localStorage.getItem('trackPutts')) || false);
-  const [trackGame, setTrackGame] = useState(() => JSON.parse(localStorage.getItem('trackGame')) || false);
+  const [trackScore, setTrackScore] = useState(() => loadJSON('trackScore', true));
+  const [trackPutts, setTrackPutts] = useState(() => loadJSON('trackPutts', false));
+  const [trackGame, setTrackGame] = useState(() => loadJSON('trackGame', false));
 
   // Simple view: map shows only the centre distance (no elevation, wind, F/B).
-  const [simpleView, setSimpleView] = useState(() => JSON.parse(localStorage.getItem('simpleView')) || false);
+  const [simpleView, setSimpleView] = useState(() => loadJSON('simpleView', false));
 
   // Dark / light theme for the whole app (HUD + scorecard). Defaults to dark.
-  const [darkMode, setDarkMode] = useState(() => {
-    const s = localStorage.getItem('darkMode');
-    return s !== null ? JSON.parse(s) : true;
-  });
-  const theme = makeTheme(darkMode);
-  const cardStyle = {
+  const [darkMode, setDarkMode] = useState(() => loadJSON('darkMode', true));
+  const theme = useMemo(() => makeTheme(darkMode), [darkMode]);
+  const cardStyle = useMemo(() => ({
     background: theme.panel, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
     border: `1px solid ${theme.hairLight}`, boxShadow: theme.panelShadow, color: theme.panelText,
-  };
+  }), [theme]);
   const chip = theme.chip;
   
-  const [matchPlayResult, setMatchPlayResult] = useState('');
   const [hideEasterEgg, setHideEasterEgg] = useState(false);
 
   const [gpsLocation, setGpsLocation] = useState(null);
-  const [gpsError, setGpsError] = useState(false); 
+  const [gpsError, setGpsError] = useState(false);
   const [targetPoint, setTargetPoint] = useState(null);
   const [isTeeView, setIsTeeView] = useState(true);
   const [showScorecard, setShowScorecard] = useState(false);
-  const [isExporting, setIsExporting] = useState(false); 
-  
-  const [centerTrigger, setCenterTrigger] = useState(0);
-  const [hasAutoCentered, setHasAutoCentered] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
-  // --- ELEVATION STATE ---
-  // elevationDiff: greenElevation - (tee or player) elevation
-  // positive = uphill (green is higher), negative = downhill.
-  // Sampled locally from the baked DEM (see utils.getElevation) — no network.
-  const [elevationDiff, setElevationDiff] = useState(null);
-  const gpsRef = useRef(null); // latest GPS pos, so the live timer reads fresh values
+  const [centerTrigger, setCenterTrigger] = useState(0);
+  // Auto-frame bookkeeping — refs (not state) so GPS ticks don't re-render or reset timers.
+  const autoCenter = useRef({ done: false, firstFixAt: 0, timer: null });
 
   // --- WIND STATE (Open-Meteo, free/keyless; the only feature needing network) ---
   // { speed: m/s, fromDeg: meteorological direction the wind blows FROM } or null.
@@ -308,41 +314,17 @@ export default function App() {
 
   const currentHole = courseData[currentHoleIndex] || courseData[0];
 
-  // Keep a ref of the latest GPS position so the live-view timer below can
-  // read fresh coordinates without re-running on every GPS tick.
-  useEffect(() => { gpsRef.current = gpsLocation; }, [gpsLocation]);
-
-  // --- TEE-VIEW ELEVATION ---
-  // Tee and green are fixed, so the tee->green difference is instant and exact.
-  useEffect(() => {
-    if (!isTeeView) return;
-    const tee = currentHole.teeLocation;
-    const green = currentHole.greenLocation;
-    const teeElev = getElevation(tee.lat, tee.lng);
-    const greenElev = getElevation(green.lat, green.lng);
-    setElevationDiff(teeElev !== null && greenElev !== null ? greenElev - teeElev : null);
-  }, [isTeeView, currentHoleIndex]);
-
-  // --- LIVE-VIEW ELEVATION ---
-  // Player elevation is dynamic. Wait 2s for GPS to settle, then recompute
-  // the player->green difference every 5s from the latest position.
-  useEffect(() => {
-    if (isTeeView) return;
-    setElevationDiff(null); // clear stale value while GPS settles
-
-    const compute = () => {
-      const pos = gpsRef.current;
-      if (!pos) return;
-      const green = currentHole.greenLocation;
-      const playerElev = getElevation(pos.lat, pos.lng);
-      const greenElev = getElevation(green.lat, green.lng);
-      if (playerElev !== null && greenElev !== null) setElevationDiff(greenElev - playerElev);
-    };
-
-    let interval;
-    const settle = setTimeout(() => { compute(); interval = setInterval(compute, 5000); }, 2000);
-    return () => { clearTimeout(settle); clearInterval(interval); };
-  }, [isTeeView, currentHoleIndex]);
+  // --- ELEVATION ---
+  // greenElevation - originElevation (origin = tee in tee view, player in live
+  // view). Positive = uphill. Pure local DEM math, so deriving it is cheap.
+  const elevationDiff = useMemo(() => {
+    const origin = isTeeView ? currentHole.teeLocation : gpsLocation;
+    if (!origin) return null;
+    const originElev = getElevation(origin.lat, origin.lng);
+    const greenElev = getElevation(currentHole.greenLocation.lat, currentHole.greenLocation.lng);
+    return (originElev !== null && greenElev !== null) ? greenElev - originElev : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTeeView, currentHoleIndex, gpsLocation]);
 
   // --- WIND FETCH ---
   // One request for the course (wind is ~uniform over 1.5km); refresh every 10 min.
@@ -358,7 +340,10 @@ export default function App() {
     };
     fetchWind();
     const id = setInterval(fetchWind, 10 * 60 * 1000);
-    return () => { cancelled = true; clearInterval(id); };
+    // Refresh when the app returns to foreground (e.g. phone unlocked mid-round).
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchWind(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { cancelled = true; clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
 
   useEffect(() => {
@@ -380,8 +365,8 @@ export default function App() {
     m.content = darkMode ? '#0b1813' : '#0a4d2a';
   }, [darkMode]);
 
-  useEffect(() => {
-    if (!trackGame) { setMatchPlayResult(''); return; }
+  const matchPlayResult = useMemo(() => {
+    if (!trackGame) return '';
     let aWins = 0, bWins = 0, holesLogged = 0;
     matchPlay.forEach(val => {
       if (val === 'A') aWins++;
@@ -392,43 +377,67 @@ export default function App() {
     const absDiff = Math.abs(diff);
     const strokeWord = absDiff === 1 ? 'höggi' : 'höggum';
     const verb = holesLogged === 18 ? 'vann' : 'er að vinna';
-    if (diff > 0) setMatchPlayResult(`Halli ${verb} með ${absDiff} ${strokeWord}`);
-    else if (diff < 0) setMatchPlayResult(`Hinir ${verb} með ${absDiff} ${strokeWord}`);
-    else setMatchPlayResult('Jafntefli');
+    if (diff > 0) return `Halli ${verb} með ${absDiff} ${strokeWord}`;
+    if (diff < 0) return `Hinir ${verb} með ${absDiff} ${strokeWord}`;
+    return 'Jafntefli';
   }, [matchPlay, trackGame]);
 
   useEffect(() => {
     if (isTeeView) return;
-    setGpsError(false); 
-    if ("geolocation" in navigator) {
-      const watchId = navigator.geolocation.watchPosition(
-        (position) => {
-          setGpsLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
-          setGpsError(false);
-        },
-        (error) => {
-          console.error("GPS Error:", error.message);
-          setGpsError(true);
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 } 
-      );
-      return () => navigator.geolocation.clearWatch(watchId);
-    } else {
-      setGpsError(true);
-    }
+    setGpsError(false);
+    if (!("geolocation" in navigator)) { setGpsError(true); return; }
+
+    let lastAccepted = null; // last accepted { lat, lng }
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        setGpsError(false); // a successful callback means GPS works, even if we skip this fix
+        const { latitude: lat, longitude: lng, accuracy } = position.coords;
+        // Accept the first fix immediately; afterwards drop noisy/tiny moves.
+        if (lastAccepted) {
+          if (accuracy > 25) return;
+          if (calculateDistanceInMeters(lastAccepted.lat, lastAccepted.lng, lat, lng) < 2) return;
+        }
+        lastAccepted = { lat, lng };
+        setGpsLocation({ lat, lng, accuracy });
+      },
+      (error) => {
+        console.error("GPS Error:", error.message);
+        setGpsError(true);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 }
+    );
+    return () => navigator.geolocation.clearWatch(watchId);
   }, [isTeeView]);
 
-  useEffect(() => { setHasAutoCentered(false); }, [currentHoleIndex, isTeeView]);
-
+  // Reset auto-frame bookkeeping when the hole or view changes.
   useEffect(() => {
-    if (!isTeeView && gpsLocation && !hasAutoCentered) {
-      const timer = setTimeout(() => {
-        setCenterTrigger(c => c + 1);
-        setHasAutoCentered(true);
-      }, 1000); 
-      return () => clearTimeout(timer);
+    const ac = autoCenter.current;
+    ac.done = false;
+    ac.firstFixAt = 0;
+    if (ac.timer) { clearTimeout(ac.timer); ac.timer = null; }
+  }, [currentHoleIndex, isTeeView]);
+
+  // Auto-frame the hole once per hole/view: as soon as an accepted fix is
+  // accurate (<=30 m), or 6 s after the first fix if it never gets that good.
+  useEffect(() => {
+    if (isTeeView || !gpsLocation) return;
+    const ac = autoCenter.current;
+    if (ac.done) return;
+    const center = () => {
+      if (ac.done) return;
+      ac.done = true;
+      if (ac.timer) { clearTimeout(ac.timer); ac.timer = null; }
+      setCenterTrigger(c => c + 1);
+    };
+    if (ac.firstFixAt === 0) {
+      ac.firstFixAt = Date.now();
+      ac.timer = setTimeout(center, 6000); // fallback; set ONCE (not reset by later fixes)
     }
-  }, [gpsLocation, isTeeView, hasAutoCentered]);
+    if (gpsLocation.accuracy != null && gpsLocation.accuracy <= 30) center();
+  }, [gpsLocation, isTeeView, currentHoleIndex]);
+
+  // Clear any pending auto-frame timer on unmount.
+  useEffect(() => () => { if (autoCenter.current.timer) clearTimeout(autoCenter.current.timer); }, []);
 
   useEffect(() => { setTargetPoint(null); }, [currentHoleIndex]);
 
@@ -472,21 +481,20 @@ export default function App() {
     setMatchPlay(newMatch);
   };
 
-  const saveScorecardImage = () => {
-    setIsExporting(true); 
-    setTimeout(() => { 
-      if (scorecardRef.current) {
-        html2canvas(scorecardRef.current, { backgroundColor: theme.scBg, scale: 2 }).then(canvas => {
-          const link = document.createElement('a');
-          const dateString = new Date().toISOString().split('T')[0];
-          link.download = `Mosgolf_Skorkort_${dateString}.png`;
-          link.href = canvas.toDataURL('image/png');
-          link.click();
-          setIsExporting(false); 
-        }).catch(() => setIsExporting(false));
-      } else {
-        setIsExporting(false);
-      }
+  const saveScorecardImage = async () => {
+    setIsExporting(true);
+    setTimeout(async () => {
+      if (!scorecardRef.current) { setIsExporting(false); return; }
+      try {
+        const { default: html2canvas } = await import('html2canvas');
+        const canvas = await html2canvas(scorecardRef.current, { backgroundColor: theme.scBg, scale: 2 });
+        const link = document.createElement('a');
+        const dateString = new Date().toISOString().split('T')[0];
+        link.download = `Mosgolf_Skorkort_${dateString}.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      } catch { /* export failed; just reset */ }
+      setIsExporting(false);
     }, 150);
   };
 
@@ -607,6 +615,15 @@ export default function App() {
     playsLike = Math.round(distanceUserToGreen + adj);
   }
   const showPlaysLike = !simpleView && playsLike !== null;
+
+  // Memoised chip divIcons — rebuilt only when their displayed number or the
+  // theme chip colours change, so standing still doesn't churn marker DOM.
+  const fbFront = greenFB ? greenFB.front : null;
+  const fbBack = greenFB ? greenFB.back : null;
+  const greenFrontChip = useMemo(() => (fbFront !== null ? createChip(fbFront, chip) : null), [fbFront, chip]);
+  const greenBackChip = useMemo(() => (fbBack !== null ? createChip(fbBack, chip) : null), [fbBack, chip]);
+  const toTargetChip = useMemo(() => (distanceUserToTarget !== null ? createChip(distanceUserToTarget, chip) : null), [distanceUserToTarget, chip]);
+  const targetToGreenChip = useMemo(() => (distanceTargetToGreen !== null ? createChip(distanceTargetToGreen, chip) : null), [distanceTargetToGreen, chip]);
 
   if (activeLocation && currentHole.greenLocation) {
     initialBounds = [
@@ -798,18 +815,18 @@ export default function App() {
             className="punchy-map-tiles"
           />
 
-          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={createGreenIcon()} rotateWithView={false} />
+          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={greenIcon} rotateWithView={false} />
           {/* Front/back chips on the green (from waypoint if aiming, else player) */}
-          {greenFB && <Marker position={[greenFB.frontPt.lat, greenFB.frontPt.lng]} icon={createChip(greenFB.front, chip)} rotateWithView={false} />}
-          {greenFB && <Marker position={[greenFB.backPt.lat, greenFB.backPt.lng]} icon={createChip(greenFB.back, chip)} rotateWithView={false} />}
+          {greenFB && greenFrontChip && <Marker position={[greenFB.frontPt.lat, greenFB.frontPt.lng]} icon={greenFrontChip} rotateWithView={false} />}
+          {greenFB && greenBackChip && <Marker position={[greenFB.backPt.lat, greenFB.backPt.lng]} icon={greenBackChip} rotateWithView={false} />}
           {userLocation && <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} rotateWithView={false} />}
           {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={targetIcon} rotateWithView={false} />}
           {/* Distances on the line midpoints: player→mark and mark→hole */}
-          {userLocation && targetPoint && distanceUserToTarget !== null && (
-            <Marker position={[(userLocation.lat + targetPoint.lat) / 2, (userLocation.lng + targetPoint.lng) / 2]} icon={createChip(distanceUserToTarget, chip)} rotateWithView={false} />
+          {userLocation && targetPoint && toTargetChip && (
+            <Marker position={[(userLocation.lat + targetPoint.lat) / 2, (userLocation.lng + targetPoint.lng) / 2]} icon={toTargetChip} rotateWithView={false} />
           )}
-          {targetPoint && distanceTargetToGreen !== null && (
-            <Marker position={[(targetPoint.lat + currentHole.greenLocation.lat) / 2, (targetPoint.lng + currentHole.greenLocation.lng) / 2]} icon={createChip(distanceTargetToGreen, chip)} rotateWithView={false} />
+          {targetPoint && targetToGreenChip && (
+            <Marker position={[(targetPoint.lat + currentHole.greenLocation.lat) / 2, (targetPoint.lng + currentHole.greenLocation.lng) / 2]} icon={targetToGreenChip} rotateWithView={false} />
           )}
           {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
           {userLocation && targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [targetPoint.lat, targetPoint.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}

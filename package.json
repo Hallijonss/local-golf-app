@@ -13,6 +13,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/barlow": "^5.2.8",
+    "@fontsource/barlow-condensed": "^5.2.8",
     "html2canvas": "^1.4.1",
     "leaflet": "^1.9.4",
     "leaflet-rotate": "^0.2.8",
