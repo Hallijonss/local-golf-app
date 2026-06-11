@@ -4,7 +4,7 @@ import { greenData } from './greenData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
 import { MapContainer, Marker, useMapEvents, Polyline, Polygon, Circle, useMap, TileLayer } from 'react-leaflet';
 import { divIcon } from 'leaflet';
-import { Navigation, Flag, Crosshair, X, Settings } from 'lucide-react';
+import { Navigation, Flag, Crosshair, X, Settings, ClipboardList } from 'lucide-react';
 
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-rotate';
@@ -367,7 +367,11 @@ const loadRound = (key, fill) => {
 //     hole: 1..18, par,                                 // from courseData
 //     score, putts,                                     // numbers, 0 = not entered
 //     match: '' | 'A' | 'B' | 'H',
-//     sheet: null,                                      // stage 2 fills
+//     sheet: null | 'skipped' | {                       // stage 2: post-hole stats
+//       tee: 'left'|'hit'|'right'|'whiff'|null,         //   par 4/5 tee shot
+//       green: 'short'|'left'|'hit'|'right'|'long'|null,//   par 3 "Á flöt?"
+//       bunker: 0|1|2|null, penalty: 0|1|2|null,        //   2 means "2+"
+//       firstPutt: '<1'|'1-3'|'3-10'|'10+'|null },      //   metres
 //     marks: [],                                        // stage 4 fills
 //   } ],
 // }
@@ -382,6 +386,14 @@ const loadRounds = () => {
     .filter((r) => r && typeof r === 'object' && typeof r.date === 'string' && Array.isArray(r.holes) && r.holes.length === 18)
     .slice(0, MAX_ROUNDS);
 };
+// Working stat sheets for the live round (NEW key 'mySheets'): 18 × the round
+// schema's hole.sheet value (null | 'skipped' | object). Survives app restarts
+// mid-round like the live scores do.
+const loadSheets = () => {
+  const v = loadJSON('mySheets', null);
+  return (Array.isArray(v) && v.length === 18) ? v : Array(18).fill(null);
+};
+
 // Out/in/total strokes, par diff over the holes actually played, total putts.
 const summarizeRound = (r) => {
   let out = 0, inn = 0, parPlayed = 0, holesPlayed = 0, puttsTotal = 0;
@@ -503,6 +515,12 @@ export default function App() {
   const [trackGame, setTrackGame] = useState(() => loadJSON('trackGame', false));
   // "Rekja skot" — reserved for the upcoming shot-tracking feature; unused for now.
   const [trackShots, setTrackShots] = useState(() => loadJSON('trackShots', false));
+  // "Skrá gögn sjálfur" — post-hole stat sheet on/off.
+  const [statSheet, setStatSheet] = useState(() => loadJSON('statSheet', false));
+  // Live-round stat sheets + which hole's sheet is open (null = closed) + draft.
+  const [sheets, setSheets] = useState(loadSheets);
+  const [sheetHole, setSheetHole] = useState(null);
+  const [sheetDraft, setSheetDraft] = useState({});
 
   // Simple view: map shows only the centre distance (no elevation, wind, F/B).
   const [simpleView, setSimpleView] = useState(() => loadJSON('simpleView', false));
@@ -603,11 +621,13 @@ export default function App() {
     localStorage.setItem('trackPutts', JSON.stringify(trackPutts));
     localStorage.setItem('trackGame', JSON.stringify(trackGame));
     localStorage.setItem('trackShots', JSON.stringify(trackShots));
+    localStorage.setItem('statSheet', JSON.stringify(statSheet));
+    localStorage.setItem('mySheets', JSON.stringify(sheets));
     localStorage.setItem('simpleView', JSON.stringify(simpleView));
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
     localStorage.setItem('myBag', JSON.stringify(bag));
     localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, simpleView, darkMode, bag, showClubRec]);
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, statSheet, sheets, simpleView, darkMode, bag, showClubRec]);
 
   // Saved rounds live in their own NEW key; the live-round keys above stay as-is.
   useEffect(() => {
@@ -696,6 +716,20 @@ export default function App() {
   useEffect(() => () => { if (autoCenter.current.timer) clearTimeout(autoCenter.current.timer); }, []);
 
   useEffect(() => { setTargetPoint(null); }, [currentHoleIndex]);
+
+  // Post-hole stat sheet: leaving a hole that has a score but no sheet yet slides
+  // the sheet up for that hole (only while "Skrá gögn sjálfur" is on). The ref
+  // guard means re-runs from scores/sheets changes never fire it.
+  const prevHoleRef = useRef(currentHoleIndex);
+  useEffect(() => {
+    const prev = prevHoleRef.current;
+    prevHoleRef.current = currentHoleIndex;
+    if (prev === currentHoleIndex || !statSheet) return;
+    if ((scores[prev] || 0) > 0 && sheets[prev] == null) {
+      setSheetDraft({});
+      setSheetHole(prev);
+    }
+  }, [currentHoleIndex, statSheet, scores, sheets]);
 
   const adjustScore = (amount) => {
     const newScores = [...scores];
@@ -820,7 +854,7 @@ export default function App() {
     holes: courseData.map((h, i) => ({
       hole: h.hole, par: h.par,
       score: scores[i] || 0, putts: putts[i] || 0, match: matchPlay[i] || '',
-      sheet: null, marks: [],
+      sheet: sheets[i] || null, marks: [],
     })),
   });
   // Built outside the setState updater so StrictMode's double-invoke stays pure.
@@ -841,7 +875,9 @@ export default function App() {
     setScores(Array(18).fill(0));
     setPutts(Array(18).fill(0));
     setMatchPlay(Array(18).fill(''));
-    // Later stages: also reset the sheet/marks working state here.
+    setSheets(Array(18).fill(null));
+    setSheetHole(null);
+    // Later stages: also reset the marks working state here.
     setShowScorecard(false);
     setCurrentHoleIndex(0);
   };
@@ -850,6 +886,31 @@ export default function App() {
   const clearRound = () => {
     if (scores.some((s) => s > 0)) setShowClearConfirm(true);
     else if (window.confirm("Þurrka út allt?")) doClearRound();
+  };
+
+  // --- STAT SHEET handlers ---
+  const openSheet = (i) => {
+    const existing = sheets[i];
+    setSheetDraft(existing && typeof existing === 'object' ? existing : {});
+    setSheetHole(i);
+  };
+  // Tap a chosen answer again to unselect it — partial sheets are fine by design.
+  const setSheetField = (field, val) =>
+    setSheetDraft((d) => ({ ...d, [field]: d[field] === val ? null : val }));
+  const saveSheet = () => {
+    const s = {
+      tee: sheetDraft.tee ?? null, green: sheetDraft.green ?? null,
+      bunker: sheetDraft.bunker ?? null, penalty: sheetDraft.penalty ?? null,
+      firstPutt: sheetDraft.firstPutt ?? null,
+    };
+    setSheets((prev) => prev.map((v, i) => (i === sheetHole ? s : v)));
+    setSheetHole(null);
+  };
+  // Sleppa marks the hole 'skipped' so it isn't asked again; when re-editing an
+  // already saved sheet it just closes without touching the data.
+  const skipSheet = () => {
+    setSheets((prev) => prev.map((v, i) => (i === sheetHole && (v == null || v === 'skipped')) ? 'skipped' : v));
+    setSheetHole(null);
   };
 
   const adjustClubMax = (id, delta) =>
@@ -1025,6 +1086,19 @@ export default function App() {
           title={`Fara á holu ${holeData.hole}`}
         >
           {holeData.hole}
+          {/* Stat-sheet re-edit: tiny corner icon; the row tap still navigates */}
+          {statSheet && !isExporting && (
+            <span
+              onClick={(e) => { e.stopPropagation(); openSheet(index); }}
+              title="Skrá gögn"
+              style={{
+                position: 'absolute', top: 0, right: 0, padding: '3px 4px', display: 'flex',
+                cursor: 'pointer', opacity: (sheets[index] && sheets[index] !== 'skipped') ? 0.9 : 0.35
+              }}
+            >
+              <ClipboardList size={11} />
+            </span>
+          )}
         </div>
         <div style={{ ...cellStyle, fontWeight: 'normal' }}>{holeData.par}</div>
         
@@ -1085,6 +1159,29 @@ export default function App() {
       </React.Fragment>
     );
   };
+
+  // Stat-sheet option pill (selected = filled) and one question row.
+  const sheetOptStyle = (selected) => ({
+    flex: 1, minWidth: 0, padding: '9px 2px', borderRadius: theme.radius, cursor: 'pointer',
+    fontWeight: 700, fontSize: '0.72rem', textAlign: 'center', boxSizing: 'border-box',
+    backgroundColor: selected ? theme.panelText : 'transparent',
+    color: selected ? theme.scBg : theme.panelText,
+    border: `1px solid ${selected ? theme.panelText : theme.hairLight}`,
+    textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap',
+    overflow: 'hidden', textOverflow: 'ellipsis'
+  });
+  const sheetGroup = (label, field, options) => (
+    <div style={{ marginBottom: '10px' }}>
+      <div style={{ ...microLabel, marginBottom: '5px' }}>{label}</div>
+      <div style={{ display: 'flex', gap: '6px' }}>
+        {options.map((o) => (
+          <div key={String(o.v)} onClick={() => setSheetField(field, o.v)} title={o.t} style={sheetOptStyle(sheetDraft[field] === o.v)}>
+            {o.l}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   const showFooter = trackScore || trackPutts || trackGame;
 
@@ -1150,6 +1247,7 @@ export default function App() {
         .no-spinners { -moz-appearance: textfield; }
         .punchy-map-tiles { filter: contrast(1.05) saturate(1.2) brightness(1.0); }
         .num { font-family: ${theme.num}; font-feature-settings: 'tnum' 1; font-variant-numeric: tabular-nums; }
+        @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
       `}</style>
       
       <video ref={videoRef} muted playsInline style={{ display: 'none' }} />
@@ -1611,7 +1709,37 @@ export default function App() {
               <SettingRow label="Dökkur hamur" checked={darkMode} onChange={setDarkMode} theme={theme} />
               <SettingRow label="Fleiri tölur" checked={!simpleView} onChange={(v) => setSimpleView(!v)} theme={theme} />
               <SettingRow label="Kaddí" checked={showClubRec} onChange={setShowClubRec} theme={theme} />
+              <SettingRow label="Skrá gögn sjálfur" checked={statSheet} onChange={setStatSheet} theme={theme} />
               <SettingRow label="Rekja skot" checked={trackShots} onChange={setTrackShots} theme={theme} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POST-HOLE STAT SHEET — slides up over the map; buttons only, all optional */}
+      {sheetHole !== null && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 20000, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div style={{
+            ...cardStyle, borderRadius: `${theme.radius} ${theme.radius} 0 0`,
+            padding: '14px 16px calc(env(safe-area-inset-bottom, 12px) + 12px)',
+            animation: 'sheetUp 0.22s ease-out'
+          }}>
+            <div style={{ ...microLabel, fontSize: '0.62rem', marginBottom: '12px' }}>
+              Hola {courseData[sheetHole].hole} · Par {courseData[sheetHole].par}
+            </div>
+            {courseData[sheetHole].par > 3
+              ? sheetGroup('Teighögg', 'tee', [
+                  { v: 'left', l: '← Vinstri' }, { v: 'hit', l: 'Hitt' }, { v: 'right', l: 'Hægri →' }, { v: 'whiff', l: '↓', t: 'Vindhögg' },
+                ])
+              : sheetGroup('Á flöt?', 'green', [
+                  { v: 'short', l: 'Stutt' }, { v: 'left', l: 'Vinstri' }, { v: 'hit', l: 'Hitt' }, { v: 'right', l: 'Hægri' }, { v: 'long', l: 'Löng' },
+                ])}
+            {sheetGroup('Glompuhögg', 'bunker', [{ v: 0, l: '0' }, { v: 1, l: '1' }, { v: 2, l: '2+' }])}
+            {sheetGroup('Víti', 'penalty', [{ v: 0, l: '0' }, { v: 1, l: '1' }, { v: 2, l: '2+' }])}
+            {sheetGroup('Fyrsta pútt', 'firstPutt', [{ v: '<1', l: '<1m' }, { v: '1-3', l: '1–3m' }, { v: '3-10', l: '3–10m' }, { v: '10+', l: '10m+' }])}
+            <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
+              <div onClick={skipSheet} style={{ ...sheetOptStyle(false), padding: '12px 2px', fontSize: '0.8rem' }}>Sleppa</div>
+              <div onClick={saveSheet} style={{ ...sheetOptStyle(true), padding: '12px 2px', fontSize: '0.8rem' }}>Vista</div>
             </div>
           </div>
         </div>
