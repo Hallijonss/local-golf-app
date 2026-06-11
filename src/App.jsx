@@ -437,6 +437,10 @@ export default function App() {
   // Club bag + whether the club recommendation ("KYLFA") is shown.
   const [bag, setBag] = useState(loadBag);
   const [showClubRec, setShowClubRec] = useState(() => loadJSON('showClubRec', true));
+  // Bag editor lives on its own screen (opened from the bottom of the scorecard).
+  const [showBag, setShowBag] = useState(false);
+  const [newClubName, setNewClubName] = useState('');
+  const [newClubMax, setNewClubMax] = useState('');
 
   // Dark / light theme for the whole app (HUD + scorecard). Defaults to dark.
   const [darkMode, setDarkMode] = useState(() => loadJSON('darkMode', true));
@@ -736,6 +740,23 @@ export default function App() {
   const toggleClub = (id) =>
     setBag((prev) => prev.map((c) => c.id === id ? { ...c, enabled: !c.enabled } : c));
   const resetBag = () => { if (window.confirm('Endurstilla pokann?')) setBag(freshBag()); };
+  const deleteClub = (id) => setBag((prev) => prev.filter((c) => c.id !== id));
+  // Add a club from the name + max fields; insert it where its max distance
+  // belongs in the list (longest first, like the default bag).
+  const addClub = () => {
+    const label = newClubName.trim();
+    const max = Math.round(Number(newClubMax));
+    if (!label || !Number.isFinite(max) || max < 20 || max > 350) return;
+    const club = { id: 'c' + Date.now().toString(36), label, max, enabled: true };
+    setBag((prev) => {
+      const idx = prev.findIndex((c) => c.max < max);
+      const next = [...prev];
+      next.splice(idx === -1 ? next.length : idx, 0, club);
+      return next;
+    });
+    setNewClubName('');
+    setNewClubMax('');
+  };
 
   const userLocation = isTeeView ? currentHole.teeLocation : gpsLocation;
   const activeLocation = userLocation || currentHole.teeLocation; 
@@ -965,6 +986,12 @@ export default function App() {
   };
   // Section heading inside the scorecard (smallcaps, left-aligned).
   const sectionHeadingStyle = { ...microLabel, fontSize: '0.62rem', opacity: 0.55, margin: '0 0 12px 2px' };
+  // Text fields on the bag screen (add-club form).
+  const bagInputStyle = {
+    minWidth: 0, flex: 1, padding: '10px', borderRadius: theme.radius,
+    border: `1px solid ${theme.scLine}`, background: 'transparent', color: theme.scText,
+    fontSize: '1rem', boxSizing: 'border-box', outline: 'none', fontFamily: theme.sans
+  };
 
   const clearBtnStyle = {
     width: '100%', background: '#fff', color: '#d32f2f', padding: '15px', border: '2px solid #d32f2f', 
@@ -1279,36 +1306,6 @@ export default function App() {
               </div>
             )}
 
-            {/* POKINN — bag editor */}
-            <div style={sectionHeadingStyle}>Pokinn</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px', marginBottom: '14px' }}>
-              {bag.map((c) => (
-                <div key={c.id} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px',
-                  border: `1px solid ${theme.scLine}`, borderRadius: theme.radius, padding: '4px 6px',
-                  opacity: c.enabled ? 1 : 0.4
-                }}>
-                  <span onClick={() => toggleClub(c.id)} title="Smelltu til að taka úr/í pokann" style={{
-                    cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem',
-                    textDecoration: c.enabled ? 'none' : 'line-through',
-                    minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-                  }}>{c.label}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1px' }}>
-                    <button onClick={() => adjustClubMax(c.id, -5)} style={clubStepBtnStyle}>{"−"}</button>
-                    <span className="num" style={{ fontSize: '0.95rem', fontWeight: 700, minWidth: '36px', textAlign: 'center' }}>
-                      {c.max}<span style={{ fontSize: '0.6em', opacity: 0.7 }}>m</span>
-                    </span>
-                    <button onClick={() => adjustClubMax(c.id, 5)} style={clubStepBtnStyle}>+</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <button onClick={resetBag} style={{
-              background: 'transparent', color: theme.scText, border: `1px solid ${theme.scLine}`,
-              borderRadius: theme.radius, padding: '8px 14px', fontWeight: 'bold', fontSize: '0.8rem',
-              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '28px'
-            }}>Sjálfgefinn poki</button>
-
             {/* AÐGERÐIR — export / submit */}
             <div style={sectionHeadingStyle}>Aðgerðir</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%' }}>
@@ -1321,7 +1318,83 @@ export default function App() {
               </button>
             </div>
 
-            <button onClick={clearRound} style={{ ...clearBtnStyle, marginTop: '25px' }}>Þurrka út skorkort</button>
+            <button onClick={clearRound} style={{ ...clearBtnStyle, marginTop: '25px', marginBottom: '15px' }}>Þurrka út skorkort</button>
+
+            {/* Bag editor opens as its own screen so it doesn't take scorecard space */}
+            <button onClick={() => setShowBag(true)} style={{
+              ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box',
+              marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
+            }}>Pokinn</button>
+          </div>
+        </div>
+      )}
+
+      {/* BAG SCREEN OVERLAY — sits above the scorecard */}
+      {showBag && (
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 10000, display: 'flex', flexDirection: 'column', color: theme.scText }}>
+          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
+            <div />
+            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Pokinn</h2>
+            <div onClick={() => setShowBag(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
+              <X size={24} />
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px', marginBottom: '28px' }}>
+              {bag.map((c) => (
+                <div key={c.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px',
+                  border: `1px solid ${theme.scLine}`, borderRadius: theme.radius, padding: '4px 6px',
+                  opacity: c.enabled ? 1 : 0.4
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
+                    <button onClick={() => deleteClub(c.id)} title="Eyða kylfu" style={{ ...clubStepBtnStyle, width: '20px', height: '20px', opacity: 0.65 }}>
+                      <X size={13} />
+                    </button>
+                    <span onClick={() => toggleClub(c.id)} title="Smelltu til að taka úr/í pokann" style={{
+                      cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem',
+                      textDecoration: c.enabled ? 'none' : 'line-through',
+                      minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                    }}>{c.label}</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1px' }}>
+                    <button onClick={() => adjustClubMax(c.id, -5)} style={clubStepBtnStyle}>{"−"}</button>
+                    <span className="num" style={{ fontSize: '0.95rem', fontWeight: 700, minWidth: '36px', textAlign: 'center' }}>
+                      {c.max}<span style={{ fontSize: '0.6em', opacity: 0.7 }}>m</span>
+                    </span>
+                    <button onClick={() => adjustClubMax(c.id, 5)} style={clubStepBtnStyle}>+</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Add a club: name + max distance, inserted sorted by distance */}
+            <div style={sectionHeadingStyle}>Bæta við kylfu</div>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '28px' }}>
+              <input
+                type="text" value={newClubName} onChange={(e) => setNewClubName(e.target.value)}
+                placeholder="Nafn" style={bagInputStyle}
+              />
+              <input
+                type="number" inputMode="numeric" className="no-spinners"
+                value={newClubMax} onChange={(e) => setNewClubMax(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') addClub(); }}
+                placeholder="Metrar" style={{ ...bagInputStyle, flex: '0 0 90px' }}
+              />
+              <button onClick={addClub} style={{
+                padding: '0 14px', background: theme.scText, color: theme.scBg, border: 'none',
+                borderRadius: theme.radius, fontWeight: 'bold', fontSize: '0.8rem', cursor: 'pointer',
+                textTransform: 'uppercase', letterSpacing: '0.5px'
+              }}>Bæta við</button>
+            </div>
+
+            <button onClick={resetBag} style={{
+              background: 'transparent', color: theme.scText, border: `1px solid ${theme.scLine}`,
+              borderRadius: theme.radius, padding: '12px 14px', fontWeight: 'bold', fontSize: '0.8rem',
+              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', width: '100%',
+              marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
+            }}>Sjálfgefinn poki</button>
           </div>
         </div>
       )}
