@@ -555,9 +555,11 @@ export default function App() {
   // Club bag + whether the club recommendation ("KYLFA") is shown.
   const [bag, setBag] = useState(loadBag);
   const [showClubRec, setShowClubRec] = useState(() => loadJSON('showClubRec', true));
-  // Bag editor and settings live on their own screens (opened from the scorecard).
+  // Bag editor, settings and saved rounds live on their own screens (opened from
+  // the scorecard).
   const [showBag, setShowBag] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showRounds, setShowRounds] = useState(false);
 
   // Saved rounds archive ('myRounds') + which round is expanded in Mínir hringir,
   // and the save-before-clear question for Þurrka út skorkort.
@@ -1607,63 +1609,19 @@ export default function App() {
               </button>
               <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
                 <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
-                <button onClick={exportAllData} style={actionBtnStyle}>Vista gögn</button>
+                <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2' }}>Opna í PiP</button>
               </div>
-              <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2', width: '100%', flex: 'none' }}>Opna í PiP</button>
               <button onClick={openGolfBox} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
                 Skrá skor í GolfBox
               </button>
             </div>
 
-            {/* MÍNIR HRINGIR — saved rounds, tap to expand, compact */}
+            {/* MÍNIR HRINGIR — opens as its own screen, like Pokinn */}
             <div style={sectionHeadingStyle}>Mínir hringir</div>
-            {rounds.length === 0 ? (
-              <div style={{ fontSize: '0.85rem', opacity: 0.6, margin: '0 2px 28px' }}>Engir vistaðir hringir.</div>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px', marginBottom: '28px' }}>
-                {rounds.map((r) => {
-                  const s = summarizeRound(r);
-                  const diffText = s.holesPlayed === 0 ? '–' : s.diff === 0 ? '±0' : s.diff > 0 ? `+${s.diff}` : `${s.diff}`;
-                  const open = expandedRound === r.date;
-                  return (
-                    <div key={r.date} style={{ border: `1px solid ${theme.scLine}`, borderRadius: theme.radius }}>
-                      <div onClick={() => setExpandedRound(open ? null : r.date)} style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
-                        padding: '10px 12px', cursor: 'pointer'
-                      }}>
-                        <span style={{ fontWeight: 'bold', fontSize: '0.85rem' }}>{fmtRoundDate(r.date)}</span>
-                        <span className="num" style={{ fontSize: '1rem', fontWeight: 700 }}>
-                          {s.total}<span style={{ fontSize: '0.75em', opacity: 0.7 }}> ({diffText})</span>
-                        </span>
-                      </div>
-                      {open && (
-                        <div style={{
-                          borderTop: `1px solid ${theme.scLine}`, padding: '10px 12px',
-                          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px'
-                        }}>
-                          <div style={{ fontSize: '0.8rem', lineHeight: 1.6 }}>
-                            <div>ÚT {s.out} · INN {s.inn} · Samtals {s.total}</div>
-                            {s.puttsTotal > 0 && <div>Pútt {s.puttsTotal}</div>}
-                          </div>
-                          <div style={{ display: 'flex', gap: '6px', flex: 'none' }}>
-                            <button onClick={() => exportRound(r)} style={{
-                              background: 'transparent', color: theme.scText, border: `1px solid ${theme.scLine}`,
-                              borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
-                              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
-                            }}>Sækja</button>
-                            <button onClick={() => deleteRound(r.date)} style={{
-                              background: 'transparent', color: '#d32f2f', border: '1px solid #d32f2f',
-                              borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
-                              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
-                            }}>Eyða</button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <button onClick={() => setShowRounds(true)} style={{
+              ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box',
+              marginBottom: '28px'
+            }}>Skoða hringi</button>
 
             {/* Destructive clear — always last */}
             <button onClick={clearRound} style={clearBtnStyle}>Þurrka út skorkort</button>
@@ -1737,6 +1695,82 @@ export default function App() {
               cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', width: '100%',
               marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
             }}>Sjálfgefinn poki</button>
+          </div>
+        </div>
+      )}
+
+      {/* ROUNDS SCREEN OVERLAY — saved rounds + data export, sits above the scorecard */}
+      {showRounds && (
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 10000, display: 'flex', flexDirection: 'column', color: theme.scText }}>
+          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
+            <div />
+            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Mínir hringir</h2>
+            <div onClick={() => setShowRounds(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
+              <X size={24} />
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
+            {rounds.length === 0 ? (
+              <div style={{ fontSize: '0.85rem', opacity: 0.6, margin: '0 2px 28px' }}>Engir vistaðir hringir.</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px', marginBottom: '28px' }}>
+                {rounds.map((r) => {
+                  const s = summarizeRound(r);
+                  const diffText = s.holesPlayed === 0 ? '–' : s.diff === 0 ? '±0' : s.diff > 0 ? `+${s.diff}` : `${s.diff}`;
+                  const open = expandedRound === r.date;
+                  return (
+                    <div key={r.date} style={{ border: `1px solid ${theme.scLine}`, borderRadius: theme.radius }}>
+                      <div onClick={() => setExpandedRound(open ? null : r.date)} style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+                        padding: '10px 12px', cursor: 'pointer'
+                      }}>
+                        <span style={{ fontWeight: 'bold', fontSize: '0.85rem' }}>{fmtRoundDate(r.date)}</span>
+                        <span className="num" style={{ fontSize: '1rem', fontWeight: 700 }}>
+                          {s.total}<span style={{ fontSize: '0.75em', opacity: 0.7 }}> ({diffText})</span>
+                        </span>
+                      </div>
+                      {open && (
+                        <div style={{
+                          borderTop: `1px solid ${theme.scLine}`, padding: '10px 12px',
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px'
+                        }}>
+                          <div style={{ fontSize: '0.8rem', lineHeight: 1.6 }}>
+                            <div>ÚT {s.out} · INN {s.inn} · Samtals {s.total}</div>
+                            {s.puttsTotal > 0 && <div>Pútt {s.puttsTotal}</div>}
+                          </div>
+                          <div style={{ display: 'flex', gap: '6px', flex: 'none' }}>
+                            <button onClick={() => exportRound(r)} style={{
+                              background: 'transparent', color: theme.scText, border: `1px solid ${theme.scLine}`,
+                              borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
+                              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
+                            }}>Sækja</button>
+                            <button onClick={() => deleteRound(r.date)} style={{
+                              background: 'transparent', color: '#d32f2f', border: '1px solid #d32f2f',
+                              borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
+                              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
+                            }}>Eyða</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Export — JSON bundled with the AI readme */}
+            <div style={sectionHeadingStyle}>Sækja gögn</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)' }}>
+              <button
+                onClick={() => { if (rounds.length) exportRound(rounds[0]); else alert('Engir vistaðir hringir.'); }}
+                style={{ ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box', opacity: rounds.length ? 1 : 0.5 }}
+              >Sækja síðasta hring</button>
+              <button
+                onClick={exportAllData}
+                style={{ ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box' }}
+              >Sækja alla hringi</button>
+            </div>
           </div>
         </div>
       )}
