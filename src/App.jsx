@@ -370,20 +370,35 @@ const loadBag = () => {
   return freshBag();
 };
 
-// Recommend a club for a plays-like target distance (metres). Returns
-// { label, pct } where pct is null for a full swing (>=95%) or out-of-range.
-const recommendClub = (target, bag) => {
+// How many metres past a club's max still counts as a full swing when the
+// front edge of the green is reachable (ball lands on the green, just short).
+const FULL_SWING_OVER_M = 3;
+// Off the tee the driver never gets recommended ("no driver off the deck").
+const DRIVER_ID = 'dr';
+
+// Recommend a club for a plays-like target distance (metres). Always the
+// smallest enabled club that covers the shot — no early step-up. A club just
+// short of the target (<= FULL_SWING_OVER_M) still counts as a full swing if
+// its max carries the front edge of the green (frontDist, plays-like metres).
+// Anything beyond the longest club gets that club at full swing (the driver
+// covers every shot past the next-longest club). Returns { label, pct } where
+// pct is null for a full swing (>=95%).
+const recommendClub = (target, bag, { frontDist = null, onTee = true } = {}) => {
   if (target == null || !(target > 0)) return null;
-  const enabled = bag.filter((c) => c.enabled).slice().sort((a, b) => a.max - b.max);
+  const enabled = bag
+    .filter((c) => c.enabled && (onTee || c.id !== DRIVER_ID))
+    .slice().sort((a, b) => a.max - b.max);
   if (enabled.length === 0) return null;
-  const longest = enabled[enabled.length - 1];
-  let idx = enabled.findIndex((c) => c.max >= target);
-  if (idx === -1) return target <= longest.max * 1.05 ? { label: longest.label, pct: null } : null;
-  // Swinging near a club's max (but not exactly at it) → step up one club for margin.
-  if (target / enabled[idx].max > 0.93 && target < enabled[idx].max && idx < enabled.length - 1) idx += 1;
-  const chosen = enabled[idx];
-  const pct = Math.round((target / chosen.max) * 100 / 5) * 5;
-  return { label: chosen.label, pct: pct < 95 ? pct : null };
+  for (const c of enabled) {
+    if (c.max >= target) {
+      const pct = Math.round((target / c.max) * 100 / 5) * 5;
+      return { label: c.label, pct: pct < 95 ? pct : null };
+    }
+    if (target - c.max <= FULL_SWING_OVER_M && frontDist !== null && c.max >= frontDist) {
+      return { label: c.label, pct: null };
+    }
+  }
+  return { label: enabled[enabled.length - 1].label, pct: null };
 };
 
 // "Plays like" model (returns adjusted metres, or null when out of range / no dist):
@@ -472,7 +487,7 @@ export default function App() {
   const loginFormRef = useRef(null);
 
   // Cached club recommendation (anti-flicker; see below).
-  const recRef = useRef({ target: null, rec: null, bag: null });
+  const recRef = useRef({ target: null, rec: null, bag: null, onTee: null });
 
   // Measured UI insets (px) so the camera frames exactly above/below the chrome.
   const topPillRef = useRef(null);
@@ -809,14 +824,27 @@ export default function App() {
 
   // Club recommendation keys on the shot in front of you: the target leg if a tap
   // target is placed, otherwise the green. Cached in a ref; only re-evaluated when
-  // the target distance moves >= 2 m (or the bag changes) so it doesn't flicker.
-  const recTarget = targetPoint ? targetPlaysLike : playsLike;
+  // the target distance moves >= 2 m (or the bag / tee status changes) so it
+  // doesn't flicker.
+  // Beyond the plays-like range (300 m) fall back to the raw distance — the
+  // exact adjustment doesn't matter out there, but the driver still should show.
+  const recTarget = targetPoint
+    ? (targetPlaysLike ?? distanceUserToTarget)
+    : (playsLike ?? distanceUserToGreen);
+  // Driver only counts while you're effectively on the teebox (<= 10 m from it).
+  const onTee = isTeeView || (gpsLocation
+    ? calculateDistanceInMeters(gpsLocation.lat, gpsLocation.lng, currentHole.teeLocation.lat, currentHole.teeLocation.lng) <= 10
+    : false);
+  // Front edge in plays-like metres (same adjustment as the centre distance);
+  // only meaningful when the shot is at the green, not a tapped waypoint.
+  const recFront = (!targetPoint && greenFB && playsLike !== null && distanceUserToGreen !== null)
+    ? greenFB.front + (playsLike - distanceUserToGreen) : null;
   let recommendation = null;
   if (recTarget != null) {
     const r = recRef.current;
-    if (r.target == null || r.bag !== bag || Math.abs(recTarget - r.target) >= 2) {
-      recommendation = recommendClub(recTarget, bag);
-      recRef.current = { target: recTarget, rec: recommendation, bag };
+    if (r.target == null || r.bag !== bag || r.onTee !== onTee || Math.abs(recTarget - r.target) >= 2) {
+      recommendation = recommendClub(recTarget, bag, { frontDist: recFront, onTee });
+      recRef.current = { target: recTarget, rec: recommendation, bag, onTee };
     } else {
       recommendation = r.rec;
     }
@@ -1341,12 +1369,12 @@ export default function App() {
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px', marginBottom: '28px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px', marginBottom: '28px' }}>
               {bag.map((c) => (
                 <div key={c.id} style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px',
-                  border: `1px solid ${theme.scLine}`, borderRadius: theme.radius, padding: '4px 6px',
-                  opacity: c.enabled ? 1 : 0.4
+                  border: `1px solid ${theme.scLine}`, borderRadius: theme.radius, padding: '6px 10px',
+                  opacity: c.enabled ? 1 : 0.4, minWidth: 0, boxSizing: 'border-box'
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
                     <button onClick={() => deleteClub(c.id)} title="Eyða kylfu" style={{ ...clubStepBtnStyle, width: '20px', height: '20px', opacity: 0.65 }}>
