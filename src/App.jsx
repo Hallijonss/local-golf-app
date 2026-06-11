@@ -805,13 +805,15 @@ export default function App() {
   const elevRounded = elevationDiff !== null ? Math.round(elevationDiff) : null;
   const showWind = !simpleView && wind && windRelAngle !== null;
   const showElev = !simpleView && elevRounded !== null;
+  const gustShown = showWind && wind.gust != null && (wind.gust - wind.speed) >= 4;
+  // Wind+gust+slope together overflow the 104px rail → stack them in two rows.
+  const stackWindElev = gustShown && showElev;
 
   // "Plays like" to the green (player/tee → green). Model lives in playsLikeFor.
   const playsLike = playsLikeFor(distanceUserToGreen, elevationDiff, wind, windRelAngle);
-  const showPlaysLike = !simpleView && playsLike !== null;
 
   // Plays-like for the player→target leg when a tap target is placed (same model,
-  // its own elevation/wind/temperature). The Spilast display stays green-based.
+  // its own elevation/wind/temperature).
   let targetPlaysLike = null;
   if (targetPoint && userLocation && distanceUserToTarget !== null) {
     const oElev = getElevation(userLocation.lat, userLocation.lng);
@@ -821,6 +823,12 @@ export default function App() {
     const tWindRel = wind ? ((wind.fromDeg + 180 - tBearing) % 360 + 360) % 360 : null;
     targetPlaysLike = playsLikeFor(distanceUserToTarget, tElevDiff, wind, tWindRel);
   }
+
+  // The big rail number follows the shot in front of you: player→marker when a
+  // point is tapped, otherwise player→green. Same for its Spilast line.
+  const railDist = (targetPoint && distanceUserToTarget !== null) ? distanceUserToTarget : distanceUserToGreen;
+  const railPlaysLike = (targetPoint && distanceUserToTarget !== null) ? targetPlaysLike : playsLike;
+  const showPlaysLike = !simpleView && railPlaysLike !== null;
 
   // Club recommendation keys on the shot in front of you: the target leg if a tap
   // target is placed, otherwise the green. Cached in a ref; only re-evaluated when
@@ -1149,16 +1157,16 @@ export default function App() {
           display: 'flex', flexDirection: 'column', alignItems: 'center'
         }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px' }}>
-            <span className="num" style={{ fontSize: distanceUserToGreen !== null ? '2.6rem' : '1.05rem', fontWeight: 700, lineHeight: 0.82 }}>
-              {distanceUserToGreen !== null ? distanceUserToGreen : gpsError ? 'Engin GPS' : 'Leitar...'}
+            <span className="num" style={{ fontSize: railDist !== null ? '2.6rem' : '1.05rem', fontWeight: 700, lineHeight: 0.82 }}>
+              {railDist !== null ? railDist : gpsError ? 'Engin GPS' : 'Leitar...'}
             </span>
-            {distanceUserToGreen !== null && <span style={{ ...microLabel, fontSize: '0.5rem' }}>m</span>}
+            {railDist !== null && <span style={{ ...microLabel, fontSize: '0.5rem' }}>m</span>}
           </div>
           {showPlaysLike && (
             <>
               <span style={{ width: '78%', height: '1px', background: theme.hairLight, margin: '5px 0 3px' }} />
               <span style={{ ...microLabel, fontSize: '0.46rem' }}>Spilast</span>
-              <span className="num" style={{ fontSize: '1.5rem', fontWeight: 700, lineHeight: 0.92, color: theme.accent }}>{playsLike}</span>
+              <span className="num" style={{ fontSize: '1.5rem', fontWeight: 700, lineHeight: 0.92, color: theme.accent }}>{railPlaysLike}</span>
             </>
           )}
           {showClubLine && (
@@ -1177,7 +1185,8 @@ export default function App() {
         {(showWind || showElev) && (
           <div style={{
             ...cardStyle, borderRadius: theme.radius, padding: '7px 6px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
+            display: 'flex', flexDirection: stackWindElev ? 'column' : 'row',
+            alignItems: 'center', justifyContent: 'center', gap: stackWindElev ? '5px' : '8px'
           }}>
             {showWind && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -1189,12 +1198,15 @@ export default function App() {
                 </span>
                 <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.85 }}>{Math.round(wind.speed)}</span>
                 {/* Gust as a smaller secondary number, only when meaningfully gustier */}
-                {wind.gust != null && (wind.gust - wind.speed) >= 4 && (
+                {gustShown && (
                   <span className="num" style={{ fontSize: '0.8em', fontWeight: 700, lineHeight: 0.85, opacity: 0.75 }}>/{Math.round(wind.gust)}</span>
                 )}
               </div>
             )}
-            {showWind && showElev && <span style={{ width: '1px', alignSelf: 'stretch', background: theme.hairLight }} />}
+            {showWind && showElev && (stackWindElev
+              ? <span style={{ width: '62%', height: '1px', background: theme.hairLight }} />
+              : <span style={{ width: '1px', alignSelf: 'stretch', background: theme.hairLight }} />
+            )}
             {showElev && (
               <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.85 }}>
                 {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'}{Math.abs(elevRounded)}
