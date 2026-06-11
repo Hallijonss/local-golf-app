@@ -4,7 +4,7 @@ import { greenData } from './greenData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
 import { MapContainer, Marker, useMapEvents, Polyline, Polygon, Circle, useMap, TileLayer } from 'react-leaflet';
 import { divIcon } from 'leaflet';
-import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff, X, Backpack } from 'lucide-react';
+import { Navigation, Flag, Crosshair, X, Settings } from 'lucide-react';
 
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-rotate';
@@ -297,20 +297,29 @@ const renderScoreShape = (shape, col) => {
   return null;
 };
 
-const ToggleBtn = ({ label, checked, onChange, theme }) => (
+// One row on the settings screen: descriptive label + on/off switch.
+const SettingRow = ({ label, checked, onChange, theme }) => (
   <div
     onClick={() => onChange(!checked)}
     style={{
-      padding: '7px 11px', borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.78rem',
-      backgroundColor: checked ? theme.scText : 'transparent',
-      color: checked ? theme.scBg : theme.scText,
-      border: `1px solid ${checked ? theme.scText : theme.scLine}`,
-      fontWeight: 'bold',
-      transition: 'all 0.1s ease',
-      textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap'
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
+      padding: '13px 12px', border: `1px solid ${theme.scLine}`, borderRadius: theme.radius,
+      cursor: 'pointer'
     }}
   >
-    {label}
+    <span style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{label}</span>
+    <div style={{
+      width: '42px', height: '24px', borderRadius: '12px', position: 'relative', flex: 'none',
+      backgroundColor: checked ? theme.scText : 'transparent',
+      border: `1px solid ${checked ? theme.scText : theme.scLine}`,
+      boxSizing: 'border-box', transition: 'background-color 0.15s ease'
+    }}>
+      <div style={{
+        position: 'absolute', top: '3px', left: checked ? '23px' : '3px',
+        width: '16px', height: '16px', borderRadius: '50%',
+        backgroundColor: checked ? theme.scBg : theme.scText, transition: 'left 0.15s ease'
+      }} />
+    </div>
   </div>
 );
 
@@ -406,8 +415,11 @@ const recommendClub = (target, bag, { frontDist = null, onTee = true } = {}) => 
 //    shots (steep landing) care less about elevation, long shots more.
 //  • WIND: along-shot component only (crosswind cancels via cosine). Headwind
 //    lengthens ~1.5%/(m·s⁻¹), mildly superlinear; tailwind shortens ~0.75%/(m·s⁻¹).
-//  • TEMPERATURE (air density): cold air plays longer, ~0.12%/°C from a 20°C baseline.
+//  • TEMPERATURE (air density): cold air plays longer, ~0.12%/°C. The baseline is
+//    a typical Icelandic golf day (BASELINE_TEMP_C) — the bag's club distances are
+//    calibrated in local conditions, so only deviations from the local norm count.
 // Each term is independently optional (no NaN when wind/temp/elevation is missing).
+const BASELINE_TEMP_C = 8;
 const playsLikeFor = (distM, elevDiff, w, relAngleDeg) => {
   if (distM === null || distM > MAX_FB_DISTANCE) return null;
   let adj = 0;
@@ -421,7 +433,7 @@ const playsLikeFor = (distM, elevDiff, w, relAngleDeg) => {
   }
   if (w && w.tempC != null) {
     const t = Math.max(-15, Math.min(30, w.tempC));
-    adj += distM * (20 - t) * 0.0012;
+    adj += distM * (BASELINE_TEMP_C - t) * 0.0012;
   }
   return Math.round(distM + adj);
 };
@@ -445,6 +457,8 @@ export default function App() {
   const [trackScore, setTrackScore] = useState(() => loadJSON('trackScore', true));
   const [trackPutts, setTrackPutts] = useState(() => loadJSON('trackPutts', false));
   const [trackGame, setTrackGame] = useState(() => loadJSON('trackGame', false));
+  // "Rekja skot" — reserved for the upcoming shot-tracking feature; unused for now.
+  const [trackShots, setTrackShots] = useState(() => loadJSON('trackShots', false));
 
   // Simple view: map shows only the centre distance (no elevation, wind, F/B).
   const [simpleView, setSimpleView] = useState(() => loadJSON('simpleView', false));
@@ -452,8 +466,9 @@ export default function App() {
   // Club bag + whether the club recommendation ("KYLFA") is shown.
   const [bag, setBag] = useState(loadBag);
   const [showClubRec, setShowClubRec] = useState(() => loadJSON('showClubRec', true));
-  // Bag editor lives on its own screen (opened from the bottom of the scorecard).
+  // Bag editor and settings live on their own screens (opened from the scorecard).
   const [showBag, setShowBag] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [newClubName, setNewClubName] = useState('');
   const [newClubMax, setNewClubMax] = useState('');
 
@@ -537,11 +552,12 @@ export default function App() {
     localStorage.setItem('trackScore', JSON.stringify(trackScore));
     localStorage.setItem('trackPutts', JSON.stringify(trackPutts));
     localStorage.setItem('trackGame', JSON.stringify(trackGame));
+    localStorage.setItem('trackShots', JSON.stringify(trackShots));
     localStorage.setItem('simpleView', JSON.stringify(simpleView));
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
     localStorage.setItem('myBag', JSON.stringify(bag));
     localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, simpleView, darkMode, bag, showClubRec]);
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, simpleView, darkMode, bag, showClubRec]);
 
   // Match the browser/PWA status-bar colour to the theme (fixes the green top border).
   useEffect(() => {
@@ -1284,16 +1300,8 @@ export default function App() {
       {showScorecard && (
         <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 9999, display: 'flex', flexDirection: 'column', color: theme.scText }}>
           <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', justifySelf: 'start' }}>
-              <div onClick={() => setSimpleView((s) => !s)} title="Einfalt / Ítarlegt yfirlit" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center' }}>
-                {simpleView ? <Eye size={19} /> : <EyeOff size={19} />}
-              </div>
-              <div onClick={() => setDarkMode((d) => !d)} title="Ljóst / Dökkt þema" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center' }}>
-                {darkMode ? <Sun size={19} /> : <Moon size={19} />}
-              </div>
-              <div onClick={() => setShowClubRec((v) => !v)} title="Kylfuráðgjöf af/á" style={{ cursor: 'pointer', color: 'white', opacity: showClubRec ? 0.85 : 0.4, display: 'flex', alignItems: 'center' }}>
-                <Backpack size={19} />
-              </div>
+            <div onClick={() => setShowSettings(true)} title="Stillingar" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'start' }}>
+              <Settings size={20} />
             </div>
             <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Skorkort</h2>
             <div onClick={() => setShowScorecard(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
@@ -1302,12 +1310,6 @@ export default function App() {
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginBottom: '25px' }}>
-              <ToggleBtn label="Skor" checked={trackScore} onChange={setTrackScore} theme={theme} />
-              <ToggleBtn label="Pútt" checked={trackPutts} onChange={setTrackPutts} theme={theme} />
-              <ToggleBtn label="Leikur" checked={trackGame} onChange={setTrackGame} theme={theme} />
-            </div>
-
             <div style={{ display: 'flex', justifyContent: 'center', width: '100%' }}>
               <div ref={scorecardRef} style={{ background: theme.scCell, borderRadius: '0', border: `2px solid ${theme.scLine}`, overflow: 'hidden', marginBottom: '25px', width: '100%', boxShadow: theme.shadow }}>
                 <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '0.8rem', backgroundColor: theme.scHead, borderBottom: `2px solid ${theme.scLine}`, color: theme.scText }}>
@@ -1435,6 +1437,31 @@ export default function App() {
               cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', width: '100%',
               marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
             }}>Sjálfgefinn poki</button>
+          </div>
+        </div>
+      )}
+
+      {/* SETTINGS SCREEN OVERLAY — sits above the scorecard */}
+      {showSettings && (
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 10000, display: 'flex', flexDirection: 'column', color: theme.scText }}>
+          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
+            <div />
+            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Stillingar</h2>
+            <div onClick={() => setShowSettings(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
+              <X size={24} />
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px' }}>
+              <SettingRow label="Telja pútt" checked={trackPutts} onChange={setTrackPutts} theme={theme} />
+              <SettingRow label="Telja leik" checked={trackGame} onChange={setTrackGame} theme={theme} />
+              <SettingRow label="Telja skot" checked={trackScore} onChange={setTrackScore} theme={theme} />
+              <SettingRow label="Dökkur hamur" checked={darkMode} onChange={setDarkMode} theme={theme} />
+              <SettingRow label="Fleiri tölur" checked={!simpleView} onChange={(v) => setSimpleView(!v)} theme={theme} />
+              <SettingRow label="Kaddí" checked={showClubRec} onChange={setShowClubRec} theme={theme} />
+              <SettingRow label="Rekja skot" checked={trackShots} onChange={setTrackShots} theme={theme} />
+            </div>
           </div>
         </div>
       )}
