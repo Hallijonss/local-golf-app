@@ -394,6 +394,33 @@ const loadSheets = () => {
   return (Array.isArray(v) && v.length === 18) ? v : Array(18).fill(null);
 };
 
+// --- EXPORT ---
+// English schema notes embedded in every export so the file is self-describing
+// (an AI analyzing it needs no other context).
+const EXPORT_README =
+  'Golf rounds from Mosgolf (Mosfellsbaer, Iceland), exported from a personal GPS app. ' +
+  'rounds[] items: { schemaVersion, date (ISO string, when the round was saved), course, ' +
+  'weather (conditions snapshot at save time or null: speed = wind m/s, fromDeg = compass direction the wind blows FROM, gust = m/s, tempC = air temp Celsius), ' +
+  'holes[18] }. Each hole: { hole (1-18), par, score (strokes, 0 = not entered), putts (0 = not entered), ' +
+  'match (match-play result: "" = not logged, "A" = player Halli won the hole, "B" = the opponents won, "H" = halved), sheet, marks }. ' +
+  'sheet = self-reported post-hole stats: null (never filled), the string "skipped" (player chose to skip), or an object ' +
+  '{ tee: tee-shot result on par 4/5 ("left"|"hit"|"right"|"whiff" = missed swing), ' +
+  'green: tee-shot result relative to the green on par 3 ("short"|"left"|"hit"|"right"|"long"), ' +
+  'bunker: bunker shots taken (0|1|2 where 2 means 2 or more), penalty: penalty strokes (same scale), ' +
+  'firstPutt: first-putt length in metres ("<1"|"1-3"|"3-10"|"10+") } — any field may be null (unanswered; partial data is normal). ' +
+  'marks = raw GPS points (lat/lng) the player tapped during the hole — NOT classified shots; do not assume each mark is a stroke.';
+
+// Download an object as pretty-printed JSON via a temporary Blob link (no deps).
+const downloadJSON = (obj, filename) => {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
 // Out/in/total strokes, par diff over the holes actually played, total putts.
 const summarizeRound = (r) => {
   let out = 0, inn = 0, parPlayed = 0, holesPlayed = 0, puttsTotal = 0;
@@ -869,6 +896,22 @@ export default function App() {
   };
   const deleteRound = (date) => {
     if (window.confirm('Eyða þessum hring?')) setRounds((prev) => prev.filter((r) => r.date !== date));
+  };
+
+  // Export: all saved rounds, plus the current round when it has any scores.
+  const exportAllData = () => {
+    const all = scores.some((s) => s > 0) ? [buildRound(), ...rounds] : rounds;
+    downloadJSON(
+      { exportedAt: new Date().toISOString(), readme: EXPORT_README, rounds: all },
+      `Mosgolf_Gogn_${new Date().toISOString().split('T')[0]}.json`
+    );
+  };
+  // Single round from Mínir hringir — named after the round's own date.
+  const exportRound = (r) => {
+    downloadJSON(
+      { exportedAt: new Date().toISOString(), readme: EXPORT_README, rounds: [r] },
+      `Mosgolf_Gogn_${r.date.split('T')[0]}.json`
+    );
   };
 
   const doClearRound = () => {
@@ -1564,8 +1607,9 @@ export default function App() {
               </button>
               <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
                 <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
-                <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2' }}>Opna í PiP</button>
+                <button onClick={exportAllData} style={actionBtnStyle}>Vista gögn</button>
               </div>
+              <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2', width: '100%', flex: 'none' }}>Opna í PiP</button>
               <button onClick={openGolfBox} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
                 Skrá skor í GolfBox
               </button>
@@ -1601,11 +1645,18 @@ export default function App() {
                             <div>ÚT {s.out} · INN {s.inn} · Samtals {s.total}</div>
                             {s.puttsTotal > 0 && <div>Pútt {s.puttsTotal}</div>}
                           </div>
-                          <button onClick={() => deleteRound(r.date)} style={{
-                            background: 'transparent', color: '#d32f2f', border: '1px solid #d32f2f',
-                            borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
-                            cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', flex: 'none'
-                          }}>Eyða</button>
+                          <div style={{ display: 'flex', gap: '6px', flex: 'none' }}>
+                            <button onClick={() => exportRound(r)} style={{
+                              background: 'transparent', color: theme.scText, border: `1px solid ${theme.scLine}`,
+                              borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
+                              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
+                            }}>Sækja</button>
+                            <button onClick={() => deleteRound(r.date)} style={{
+                              background: 'transparent', color: '#d32f2f', border: '1px solid #d32f2f',
+                              borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
+                              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
+                            }}>Eyða</button>
+                          </div>
                         </div>
                       )}
                     </div>
