@@ -356,6 +356,50 @@ const loadRound = (key, fill) => {
   return (Array.isArray(v) && v.length === 18) ? v : Array(18).fill(fill);
 };
 
+// --- SAVED ROUNDS ('myRounds') ---
+// ONE round-object schema (schemaVersion 1) — every later feature reads/writes this:
+// {
+//   schemaVersion: 1,
+//   date: ISO string (set at save time),
+//   course: 'Mosgolf',
+//   weather: { speed, fromDeg, gust, tempC } | null,   // wind snapshot at save time
+//   holes: [ 18 × {
+//     hole: 1..18, par,                                 // from courseData
+//     score, putts,                                     // numbers, 0 = not entered
+//     match: '' | 'A' | 'B' | 'H',
+//     sheet: null,                                      // stage 2 fills
+//     marks: [],                                        // stage 4 fills
+//   } ],
+// }
+// Stored newest-first in the NEW localStorage key 'myRounds' (live round keys
+// myScores/myPutts/myMatch stay untouched), capped at MAX_ROUNDS.
+const ROUNDS_KEY = 'myRounds';
+const MAX_ROUNDS = 50;
+const loadRounds = () => {
+  const v = loadJSON(ROUNDS_KEY, null);
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((r) => r && typeof r === 'object' && typeof r.date === 'string' && Array.isArray(r.holes) && r.holes.length === 18)
+    .slice(0, MAX_ROUNDS);
+};
+// Out/in/total strokes, par diff over the holes actually played, total putts.
+const summarizeRound = (r) => {
+  let out = 0, inn = 0, parPlayed = 0, holesPlayed = 0, puttsTotal = 0;
+  r.holes.forEach((h, i) => {
+    const s = h.score || 0;
+    if (i < 9) out += s; else inn += s;
+    if (s > 0) { parPlayed += h.par; holesPlayed += 1; }
+    puttsTotal += h.putts || 0;
+  });
+  const total = out + inn;
+  return { out, inn, total, diff: total - parPlayed, holesPlayed, puttsTotal };
+};
+// Manual day.month.year — locale data for is-IS isn't guaranteed on every device.
+const fmtRoundDate = (iso) => {
+  const d = new Date(iso);
+  return isNaN(d) ? '' : `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear()}`;
+};
+
 // --- BAG / CLUB RECOMMENDATION ---
 // max = full-swing carry in metres.
 const DEFAULT_BAG = [
@@ -469,6 +513,12 @@ export default function App() {
   // Bag editor and settings live on their own screens (opened from the scorecard).
   const [showBag, setShowBag] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  // Saved rounds archive ('myRounds') + which round is expanded in Mínir hringir,
+  // and the save-before-clear question for Þurrka út skorkort.
+  const [rounds, setRounds] = useState(loadRounds);
+  const [expandedRound, setExpandedRound] = useState(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [newClubName, setNewClubName] = useState('');
   const [newClubMax, setNewClubMax] = useState('');
 
@@ -558,6 +608,11 @@ export default function App() {
     localStorage.setItem('myBag', JSON.stringify(bag));
     localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
   }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, simpleView, darkMode, bag, showClubRec]);
+
+  // Saved rounds live in their own NEW key; the live-round keys above stay as-is.
+  useEffect(() => {
+    localStorage.setItem(ROUNDS_KEY, JSON.stringify(rounds));
+  }, [rounds]);
 
   // Match the browser/PWA status-bar colour to the theme (fixes the green top border).
   useEffect(() => {
@@ -756,14 +811,45 @@ export default function App() {
     }
   };
 
+  // Build a round object (schema above) from the live round + weather snapshot.
+  const buildRound = () => ({
+    schemaVersion: 1,
+    date: new Date().toISOString(),
+    course: 'Mosgolf',
+    weather: wind ? { speed: wind.speed, fromDeg: wind.fromDeg, gust: wind.gust, tempC: wind.tempC } : null,
+    holes: courseData.map((h, i) => ({
+      hole: h.hole, par: h.par,
+      score: scores[i] || 0, putts: putts[i] || 0, match: matchPlay[i] || '',
+      sheet: null, marks: [],
+    })),
+  });
+  // Built outside the setState updater so StrictMode's double-invoke stays pure.
+  const archiveCurrentRound = () => {
+    const r = buildRound();
+    setRounds((prev) => [r, ...prev].slice(0, MAX_ROUNDS));
+  };
+  const saveRound = () => {
+    if (!scores.some((s) => s > 0)) { alert('Ekkert skor til að vista.'); return; }
+    archiveCurrentRound();
+    alert('Hringur vistaður!');
+  };
+  const deleteRound = (date) => {
+    if (window.confirm('Eyða þessum hring?')) setRounds((prev) => prev.filter((r) => r.date !== date));
+  };
+
+  const doClearRound = () => {
+    setScores(Array(18).fill(0));
+    setPutts(Array(18).fill(0));
+    setMatchPlay(Array(18).fill(''));
+    // Later stages: also reset the sheet/marks working state here.
+    setShowScorecard(false);
+    setCurrentHoleIndex(0);
+  };
+  // With scores on the card, offer to archive first (Já / Nei / Hætta við modal);
+  // an empty card keeps the old simple confirm.
   const clearRound = () => {
-    if (window.confirm("Þurrka út allt?")) {
-      setScores(Array(18).fill(0));
-      setPutts(Array(18).fill(0));
-      setMatchPlay(Array(18).fill(''));
-      setShowScorecard(false);
-      setCurrentHoleIndex(0);
-    }
+    if (scores.some((s) => s > 0)) setShowClearConfirm(true);
+    else if (window.confirm("Þurrka út allt?")) doClearRound();
   };
 
   const adjustClubMax = (id, delta) =>
@@ -1091,6 +1177,20 @@ export default function App() {
         </div>
       )}
 
+      {/* SAVE-BEFORE-CLEAR MODAL (Já = save+clear / Nei = clear / Hætta við) */}
+      {showClearConfirm && (
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 100000, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ background: theme.softWhite, padding: '25px', borderRadius: theme.radius, width: '90%', maxWidth: '400px', textAlign: 'center', border: `1px solid ${theme.darkGreen}` }}>
+            <h3 style={{ marginTop: 0, marginBottom: '20px', color: theme.darkGreen, fontSize: '1.15rem', textTransform: 'uppercase' }}>Vista hringinn áður en þú þurrkar út?</h3>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button onClick={() => { archiveCurrentRound(); doClearRound(); setShowClearConfirm(false); }} style={{ flex: 1, padding: '12px 6px', background: theme.darkGreen, color: '#fff', border: 'none', borderRadius: theme.radius, fontSize: '0.9rem', fontWeight: 'bold', cursor: 'pointer', textTransform: 'uppercase' }}>Já</button>
+              <button onClick={() => { doClearRound(); setShowClearConfirm(false); }} style={{ flex: 1, padding: '12px 6px', background: 'transparent', color: '#d32f2f', border: '1px solid #d32f2f', borderRadius: theme.radius, fontSize: '0.9rem', fontWeight: 'bold', cursor: 'pointer', textTransform: 'uppercase' }}>Nei</button>
+              <button onClick={() => setShowClearConfirm(false)} style={{ flex: 1, padding: '12px 6px', background: 'transparent', color: theme.darkGreen, border: `1px solid ${theme.darkGreen}`, borderRadius: theme.radius, fontSize: '0.9rem', fontWeight: 'bold', cursor: 'pointer', textTransform: 'uppercase' }}>Hætta við</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* FULL-SCREEN MAP WITH LAYER STACKING */}
       <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
         <MapContainer bounds={initialBounds} doubleClickZoom={false} zoomControl={false} rotateControl={false} zoomSnap={0} maxZoom={22} rotate={true} style={{ width: '100%', height: '100%' }}>
@@ -1341,32 +1441,83 @@ export default function App() {
               </div>
             </div>
 
+            {/* NIÐURSTAÐA LEIKS */}
             {trackGame && matchPlayResult && (
-              <div style={{ padding: '20px', background: 'transparent', border: `2px solid ${theme.scLine}`, borderRadius: theme.radius, marginBottom: '25px', textAlign: 'center', fontWeight: 'bold', fontSize: '1.2rem', color: theme.scText }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1rem', color: theme.scText, textTransform: 'uppercase', letterSpacing: '1px' }}>Niðurstaða leiks</h3>
-                {matchPlayResult}
-              </div>
+              <>
+                <div style={sectionHeadingStyle}>Niðurstaða leiks</div>
+                <div style={{ padding: '16px', background: 'transparent', border: `2px solid ${theme.scLine}`, borderRadius: theme.radius, marginBottom: '28px', textAlign: 'center', fontWeight: 'bold', fontSize: '1.1rem', color: theme.scText }}>
+                  {matchPlayResult}
+                </div>
+              </>
             )}
 
-            {/* AÐGERÐIR — export / submit */}
+            {/* POKINN — opens as its own screen so it doesn't take scorecard space */}
+            <div style={sectionHeadingStyle}>Pokinn</div>
+            <button onClick={() => setShowBag(true)} style={{
+              ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box',
+              marginBottom: '28px'
+            }}>Opna pokann</button>
+
+            {/* AÐGERÐIR — archive / export / submit */}
             <div style={sectionHeadingStyle}>Aðgerðir</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%', marginBottom: '28px' }}>
+              <button onClick={saveRound} style={{ ...actionBtnStyle, background: theme.darkGreen, color: '#fff', border: `2px solid ${theme.darkGreen}`, width: '100%', flex: 'none' }}>
+                Vista hring
+              </button>
               <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
                 <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
                 <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2' }}>Opna í PiP</button>
               </div>
-              <button onClick={openGolfBox} style={{ ...actionBtnStyle, background: theme.darkGreen, color: '#fff', border: `2px solid ${theme.darkGreen}`, width: '100%', flex: 'none' }}>
+              <button onClick={openGolfBox} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
                 Skrá skor í GolfBox
               </button>
             </div>
 
-            <button onClick={clearRound} style={{ ...clearBtnStyle, marginTop: '25px', marginBottom: '15px' }}>Þurrka út skorkort</button>
+            {/* MÍNIR HRINGIR — saved rounds, tap to expand, compact */}
+            <div style={sectionHeadingStyle}>Mínir hringir</div>
+            {rounds.length === 0 ? (
+              <div style={{ fontSize: '0.85rem', opacity: 0.6, margin: '0 2px 28px' }}>Engir vistaðir hringir.</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px', marginBottom: '28px' }}>
+                {rounds.map((r) => {
+                  const s = summarizeRound(r);
+                  const diffText = s.holesPlayed === 0 ? '–' : s.diff === 0 ? '±0' : s.diff > 0 ? `+${s.diff}` : `${s.diff}`;
+                  const open = expandedRound === r.date;
+                  return (
+                    <div key={r.date} style={{ border: `1px solid ${theme.scLine}`, borderRadius: theme.radius }}>
+                      <div onClick={() => setExpandedRound(open ? null : r.date)} style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+                        padding: '10px 12px', cursor: 'pointer'
+                      }}>
+                        <span style={{ fontWeight: 'bold', fontSize: '0.85rem' }}>{fmtRoundDate(r.date)}</span>
+                        <span className="num" style={{ fontSize: '1rem', fontWeight: 700 }}>
+                          {s.total}<span style={{ fontSize: '0.75em', opacity: 0.7 }}> ({diffText})</span>
+                        </span>
+                      </div>
+                      {open && (
+                        <div style={{
+                          borderTop: `1px solid ${theme.scLine}`, padding: '10px 12px',
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px'
+                        }}>
+                          <div style={{ fontSize: '0.8rem', lineHeight: 1.6 }}>
+                            <div>ÚT {s.out} · INN {s.inn} · Samtals {s.total}</div>
+                            {s.puttsTotal > 0 && <div>Pútt {s.puttsTotal}</div>}
+                          </div>
+                          <button onClick={() => deleteRound(r.date)} style={{
+                            background: 'transparent', color: '#d32f2f', border: '1px solid #d32f2f',
+                            borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
+                            cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', flex: 'none'
+                          }}>Eyða</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
-            {/* Bag editor opens as its own screen so it doesn't take scorecard space */}
-            <button onClick={() => setShowBag(true)} style={{
-              ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box',
-              marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
-            }}>Pokinn</button>
+            {/* Destructive clear — always last */}
+            <button onClick={clearRound} style={clearBtnStyle}>Þurrka út skorkort</button>
           </div>
         </div>
       )}
