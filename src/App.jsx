@@ -4,7 +4,7 @@ import { greenData } from './greenData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
 import { MapContainer, Marker, useMapEvents, Polyline, Polygon, Circle, useMap, TileLayer } from 'react-leaflet';
 import { divIcon } from 'leaflet';
-import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff, X } from 'lucide-react';
+import { Navigation, Flag, Crosshair, Moon, Sun, Eye, EyeOff, X, Backpack } from 'lucide-react';
 
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-rotate';
@@ -347,6 +347,70 @@ const loadRound = (key, fill) => {
   return (Array.isArray(v) && v.length === 18) ? v : Array(18).fill(fill);
 };
 
+// --- BAG / CLUB RECOMMENDATION ---
+// max = full-swing carry in metres.
+const DEFAULT_BAG = [
+  { id: 'dr', label: 'Dræver', max: 300 },
+  { id: '3w', label: '3-tré', max: 200 },
+  { id: 'i4', label: '4-járn', max: 160 },
+  { id: 'i5', label: '5-járn', max: 150 },
+  { id: 'i6', label: '6-járn', max: 140 },
+  { id: 'i7', label: '7-járn', max: 130 },
+  { id: 'i8', label: '8-járn', max: 125 },
+  { id: 'i9', label: '9-járn', max: 115 },
+  { id: 'pw', label: 'PW', max: 110 },
+  { id: 'w56', label: '56°', max: 95 },
+];
+const freshBag = () => DEFAULT_BAG.map((c) => ({ ...c, enabled: true }));
+const loadBag = () => {
+  const v = loadJSON('myBag', null);
+  if (Array.isArray(v) && v.length && v.every((c) => c && typeof c.id === 'string' && typeof c.label === 'string' && typeof c.max === 'number')) {
+    return v.map((c) => ({ id: c.id, label: c.label, max: c.max, enabled: c.enabled !== false }));
+  }
+  return freshBag();
+};
+
+// Recommend a club for a plays-like target distance (metres). Returns
+// { label, pct } where pct is null for a full swing (>=95%) or out-of-range.
+const recommendClub = (target, bag) => {
+  if (target == null || !(target > 0)) return null;
+  const enabled = bag.filter((c) => c.enabled).slice().sort((a, b) => a.max - b.max);
+  if (enabled.length === 0) return null;
+  const longest = enabled[enabled.length - 1];
+  let idx = enabled.findIndex((c) => c.max >= target);
+  if (idx === -1) return target <= longest.max * 1.05 ? { label: longest.label, pct: null } : null;
+  // Swinging near a club's max (but not exactly at it) → step up one club for margin.
+  if (target / enabled[idx].max > 0.93 && target < enabled[idx].max && idx < enabled.length - 1) idx += 1;
+  const chosen = enabled[idx];
+  const pct = Math.round((target / chosen.max) * 100 / 5) * 5;
+  return { label: chosen.label, pct: pct < 95 ? pct : null };
+};
+
+// "Plays like" model (returns adjusted metres, or null when out of range / no dist):
+//  • SLOPE: rise / tan(descent angle); descentDeg = max(36, 52 - 0.06·dist) so short
+//    shots (steep landing) care less about elevation, long shots more.
+//  • WIND: along-shot component only (crosswind cancels via cosine). Headwind
+//    lengthens ~1.5%/(m·s⁻¹), mildly superlinear; tailwind shortens ~0.75%/(m·s⁻¹).
+//  • TEMPERATURE (air density): cold air plays longer, ~0.12%/°C from a 20°C baseline.
+// Each term is independently optional (no NaN when wind/temp/elevation is missing).
+const playsLikeFor = (distM, elevDiff, w, relAngleDeg) => {
+  if (distM === null || distM > MAX_FB_DISTANCE) return null;
+  let adj = 0;
+  if (elevDiff !== null) {
+    const descentDeg = Math.max(36, 52 - 0.06 * distM);
+    adj += elevDiff / Math.tan(descentDeg * Math.PI / 180);
+  }
+  if (w && relAngleDeg !== null) {
+    const tail = w.speed * Math.cos(relAngleDeg * Math.PI / 180); // + tailwind, - headwind
+    adj += tail >= 0 ? -distM * tail * 0.0075 : -distM * tail * (0.015 + 0.0004 * w.speed);
+  }
+  if (w && w.tempC != null) {
+    const t = Math.max(-15, Math.min(30, w.tempC));
+    adj += distM * (20 - t) * 0.0012;
+  }
+  return Math.round(distM + adj);
+};
+
 // --- MAIN APP ---
 export default function App() {
   const [currentHoleIndex, setCurrentHoleIndex] = useState(() => {
@@ -369,6 +433,10 @@ export default function App() {
 
   // Simple view: map shows only the centre distance (no elevation, wind, F/B).
   const [simpleView, setSimpleView] = useState(() => loadJSON('simpleView', false));
+
+  // Club bag + whether the club recommendation ("KYLFA") is shown.
+  const [bag, setBag] = useState(loadBag);
+  const [showClubRec, setShowClubRec] = useState(() => loadJSON('showClubRec', true));
 
   // Dark / light theme for the whole app (HUD + scorecard). Defaults to dark.
   const [darkMode, setDarkMode] = useState(() => loadJSON('darkMode', true));
@@ -398,6 +466,9 @@ export default function App() {
   const scorecardRef = useRef(null);
   const videoRef = useRef(null);
   const loginFormRef = useRef(null);
+
+  // Cached club recommendation (anti-flicker; see below).
+  const recRef = useRef({ target: null, rec: null, bag: null });
 
   // Measured UI insets (px) so the camera frames exactly above/below the chrome.
   const topPillRef = useRef(null);
@@ -449,7 +520,9 @@ export default function App() {
     localStorage.setItem('trackGame', JSON.stringify(trackGame));
     localStorage.setItem('simpleView', JSON.stringify(simpleView));
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, simpleView, darkMode]);
+    localStorage.setItem('myBag', JSON.stringify(bag));
+    localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, simpleView, darkMode, bag, showClubRec]);
 
   // Match the browser/PWA status-bar colour to the theme (fixes the green top border).
   useEffect(() => {
@@ -652,11 +725,17 @@ export default function App() {
     if (window.confirm("Þurrka út allt?")) {
       setScores(Array(18).fill(0));
       setPutts(Array(18).fill(0));
-      setMatchPlay(Array(18).fill('')); 
+      setMatchPlay(Array(18).fill(''));
       setShowScorecard(false);
-      setCurrentHoleIndex(0); 
+      setCurrentHoleIndex(0);
     }
   };
+
+  const adjustClubMax = (id, delta) =>
+    setBag((prev) => prev.map((c) => c.id === id ? { ...c, max: Math.min(350, Math.max(20, c.max + delta)) } : c));
+  const toggleClub = (id) =>
+    setBag((prev) => prev.map((c) => c.id === id ? { ...c, enabled: !c.enabled } : c));
+  const resetBag = () => { if (window.confirm('Endurstilla pokann?')) setBag(freshBag()); };
 
   const userLocation = isTeeView ? currentHole.teeLocation : gpsLocation;
   const activeLocation = userLocation || currentHole.teeLocation; 
@@ -691,36 +770,37 @@ export default function App() {
   const showWind = !simpleView && wind && windRelAngle !== null;
   const showElev = !simpleView && elevRounded !== null;
 
-  // "Plays like" — the green distance adjusted for the conditions. Each term is
-  // independently optional (no NaN when wind/temp is missing):
-  //  • SLOPE: rise / tan(descent angle). The ball lands steeper on short shots
-  //    (so elevation matters less) and shallower on long ones (matters more):
-  //    descentDeg = clamp-down from 52° to a 36° floor as distance grows.
-  //  • WIND: only the along-shot component (crosswind cancels via cosine). Headwind
-  //    lengthens at ~1.5%/(m·s⁻¹), mildly superlinear with speed; tailwind shortens
-  //    at ~0.75%/(m·s⁻¹).
-  //  • TEMPERATURE (air density): cold air is denser → plays longer, ~0.12%/°C
-  //    relative to a 20°C baseline.
-  let playsLike = null;
-  if (distanceUserToGreen !== null && distanceUserToGreen <= MAX_FB_DISTANCE) {
-    let adj = 0;
-    if (elevationDiff !== null) {
-      const descentDeg = Math.max(36, 52 - 0.06 * distanceUserToGreen);
-      adj += elevationDiff / Math.tan(descentDeg * Math.PI / 180); // uphill (+) plays longer
-    }
-    if (wind && windRelAngle !== null) {
-      const tail = wind.speed * Math.cos(windRelAngle * Math.PI / 180); // + tailwind, - headwind
-      adj += tail >= 0
-        ? -distanceUserToGreen * tail * 0.0075                       // tailwind shortens
-        : -distanceUserToGreen * tail * (0.015 + 0.0004 * wind.speed); // headwind lengthens (superlinear)
-    }
-    if (wind && wind.tempC != null) {
-      const t = Math.max(-15, Math.min(30, wind.tempC));
-      adj += distanceUserToGreen * (20 - t) * 0.0012;                // cold air plays longer
-    }
-    playsLike = Math.round(distanceUserToGreen + adj);
-  }
+  // "Plays like" to the green (player/tee → green). Model lives in playsLikeFor.
+  const playsLike = playsLikeFor(distanceUserToGreen, elevationDiff, wind, windRelAngle);
   const showPlaysLike = !simpleView && playsLike !== null;
+
+  // Plays-like for the player→target leg when a tap target is placed (same model,
+  // its own elevation/wind/temperature). The Spilast display stays green-based.
+  let targetPlaysLike = null;
+  if (targetPoint && userLocation && distanceUserToTarget !== null) {
+    const oElev = getElevation(userLocation.lat, userLocation.lng);
+    const tElev = getElevation(targetPoint.lat, targetPoint.lng);
+    const tElevDiff = (oElev !== null && tElev !== null) ? tElev - oElev : null;
+    const tBearing = calculateBearing(userLocation.lat, userLocation.lng, targetPoint.lat, targetPoint.lng);
+    const tWindRel = wind ? ((wind.fromDeg + 180 - tBearing) % 360 + 360) % 360 : null;
+    targetPlaysLike = playsLikeFor(distanceUserToTarget, tElevDiff, wind, tWindRel);
+  }
+
+  // Club recommendation keys on the shot in front of you: the target leg if a tap
+  // target is placed, otherwise the green. Cached in a ref; only re-evaluated when
+  // the target distance moves >= 2 m (or the bag changes) so it doesn't flicker.
+  const recTarget = targetPoint ? targetPlaysLike : playsLike;
+  let recommendation = null;
+  if (recTarget != null) {
+    const r = recRef.current;
+    if (r.target == null || r.bag !== bag || Math.abs(recTarget - r.target) >= 2) {
+      recommendation = recommendClub(recTarget, bag);
+      recRef.current = { target: recTarget, rec: recommendation, bag };
+    } else {
+      recommendation = r.rec;
+    }
+  }
+  const showClubLine = showClubRec && !simpleView && recommendation;
 
   // Memoised label divIcons — rebuilt only when their displayed number changes,
   // so standing still doesn't churn marker DOM. (Labels are theme-independent.)
@@ -877,6 +957,15 @@ export default function App() {
     textTransform: 'uppercase', letterSpacing: '0.5px', textAlign: 'center'
   };
 
+  // Small stepper for the bag editor (scorecard-themed, smaller than the footer steppers).
+  const clubStepBtnStyle = {
+    width: '24px', height: '24px', border: 'none', background: 'transparent', color: theme.scText,
+    fontSize: '1.4rem', fontWeight: 300, cursor: 'pointer', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', padding: 0, lineHeight: 1, touchAction: 'manipulation'
+  };
+  // Section heading inside the scorecard (smallcaps, left-aligned).
+  const sectionHeadingStyle = { ...microLabel, fontSize: '0.62rem', opacity: 0.55, margin: '0 0 12px 2px' };
+
   const clearBtnStyle = {
     width: '100%', background: '#fff', color: '#d32f2f', padding: '15px', border: '2px solid #d32f2f', 
     borderRadius: theme.radius, fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer', 
@@ -1017,6 +1106,16 @@ export default function App() {
               <span className="num" style={{ fontSize: '1.5rem', fontWeight: 700, lineHeight: 0.92, color: theme.accent }}>{playsLike}</span>
             </>
           )}
+          {showClubLine && (
+            <>
+              <span style={{ width: '78%', height: '1px', background: theme.hairLight, margin: '5px 0 3px' }} />
+              <span style={{ ...microLabel, fontSize: '0.46rem' }}>Kylfa</span>
+              <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.95 }}>
+                {recommendation.label}
+                {recommendation.pct != null && <span style={{ fontSize: '0.75em', opacity: 0.7 }}> {recommendation.pct}%</span>}
+              </span>
+            </>
+          )}
         </div>
 
         {/* Conditions — wind | slope side by side, same width as the distance box */}
@@ -1125,6 +1224,9 @@ export default function App() {
               <div onClick={() => setDarkMode((d) => !d)} title="Ljóst / Dökkt þema" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center' }}>
                 {darkMode ? <Sun size={19} /> : <Moon size={19} />}
               </div>
+              <div onClick={() => setShowClubRec((v) => !v)} title="Kylfuráðgjöf af/á" style={{ cursor: 'pointer', color: 'white', opacity: showClubRec ? 0.85 : 0.4, display: 'flex', alignItems: 'center' }}>
+                <Backpack size={19} />
+              </div>
             </div>
             <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Skorkort</h2>
             <div onClick={() => setShowScorecard(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
@@ -1177,7 +1279,39 @@ export default function App() {
               </div>
             )}
 
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%', marginBottom: '20px' }}>
+            {/* POKINN — bag editor */}
+            <div style={sectionHeadingStyle}>Pokinn</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px', marginBottom: '14px' }}>
+              {bag.map((c) => (
+                <div key={c.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px',
+                  border: `1px solid ${theme.scLine}`, borderRadius: theme.radius, padding: '4px 6px',
+                  opacity: c.enabled ? 1 : 0.4
+                }}>
+                  <span onClick={() => toggleClub(c.id)} title="Smelltu til að taka úr/í pokann" style={{
+                    cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem',
+                    textDecoration: c.enabled ? 'none' : 'line-through',
+                    minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                  }}>{c.label}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1px' }}>
+                    <button onClick={() => adjustClubMax(c.id, -5)} style={clubStepBtnStyle}>{"−"}</button>
+                    <span className="num" style={{ fontSize: '0.95rem', fontWeight: 700, minWidth: '36px', textAlign: 'center' }}>
+                      {c.max}<span style={{ fontSize: '0.6em', opacity: 0.7 }}>m</span>
+                    </span>
+                    <button onClick={() => adjustClubMax(c.id, 5)} style={clubStepBtnStyle}>+</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button onClick={resetBag} style={{
+              background: 'transparent', color: theme.scText, border: `1px solid ${theme.scLine}`,
+              borderRadius: theme.radius, padding: '8px 14px', fontWeight: 'bold', fontSize: '0.8rem',
+              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '28px'
+            }}>Sjálfgefinn poki</button>
+
+            {/* AÐGERÐIR — export / submit */}
+            <div style={sectionHeadingStyle}>Aðgerðir</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%' }}>
               <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
                 <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
                 <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2' }}>Opna í PiP</button>
@@ -1187,7 +1321,7 @@ export default function App() {
               </button>
             </div>
 
-            <button onClick={clearRound} style={clearBtnStyle}>Þurrka út skorkort</button>
+            <button onClick={clearRound} style={{ ...clearBtnStyle, marginTop: '25px' }}>Þurrka út skorkort</button>
           </div>
         </div>
       )}
