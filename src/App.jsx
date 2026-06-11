@@ -421,6 +421,24 @@ const downloadJSON = (obj, filename) => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
+// Compact one-line summary of a hole's stat sheet for the "Sjá meiri gögn" rows:
+// arrows for the tee shot (↑ = braut/flöt, ↓ = vindhögg; S/L = stutt/löng on par 3),
+// G = glompuhögg, V = víti, P = fyrsta pútt. Only answered fields show.
+const sheetLine = (sheet, par) => {
+  if (!sheet || typeof sheet !== 'object') return null;
+  const parts = [];
+  if (par > 3 && sheet.tee) parts.push({ left: '←', hit: '↑', right: '→', whiff: '↓' }[sheet.tee]);
+  if (par === 3 && sheet.green) parts.push({ short: 'S', left: '←', hit: '↑', right: '→', long: 'L' }[sheet.green]);
+  if (sheet.bunker) parts.push(`G${sheet.bunker === 2 ? '2+' : sheet.bunker}`);
+  if (sheet.penalty) parts.push(`V${sheet.penalty === 2 ? '2+' : sheet.penalty}`);
+  if (sheet.firstPutt) parts.push(`P ${({ '<1': '<1m', '1-3': '1–3m', '3-10': '3–10m', '10+': '10m+' })[sheet.firstPutt] || sheet.firstPutt}`);
+  return parts.length ? parts.join(' · ') : null;
+};
+
+// Rounds with fewer scored holes than this are left out of the bulk export —
+// they're abandoned cards, not data.
+const MIN_EXPORT_HOLES = 6;
+
 // Out/in/total strokes, par diff over the holes actually played, total putts.
 const summarizeRound = (r) => {
   let out = 0, inn = 0, parPlayed = 0, holesPlayed = 0, puttsTotal = 0;
@@ -548,6 +566,8 @@ export default function App() {
   const [sheets, setSheets] = useState(loadSheets);
   const [sheetHole, setSheetHole] = useState(null);
   const [sheetDraft, setSheetDraft] = useState({});
+  // "Sjá meiri gögn" — show per-hole stat lines under the scorecard rows.
+  const [statsView, setStatsView] = useState(() => loadJSON('statsView', false));
 
   // Simple view: map shows only the centre distance (no elevation, wind, F/B).
   const [simpleView, setSimpleView] = useState(() => loadJSON('simpleView', false));
@@ -652,11 +672,12 @@ export default function App() {
     localStorage.setItem('trackShots', JSON.stringify(trackShots));
     localStorage.setItem('statSheet', JSON.stringify(statSheet));
     localStorage.setItem('mySheets', JSON.stringify(sheets));
+    localStorage.setItem('statsView', JSON.stringify(statsView));
     localStorage.setItem('simpleView', JSON.stringify(simpleView));
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
     localStorage.setItem('myBag', JSON.stringify(bag));
     localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, statSheet, sheets, simpleView, darkMode, bag, showClubRec]);
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, statSheet, sheets, statsView, simpleView, darkMode, bag, showClubRec]);
 
   // Saved rounds live in their own NEW key; the live-round keys above stay as-is.
   useEffect(() => {
@@ -900,11 +921,14 @@ export default function App() {
     if (window.confirm('Eyða þessum hring?')) setRounds((prev) => prev.filter((r) => r.date !== date));
   };
 
-  // Export: all saved rounds, plus the current round when it has any scores.
+  // Export: all saved rounds plus the current round, keeping only rounds with at
+  // least MIN_EXPORT_HOLES scored holes (filters out abandoned cards).
   const exportAllData = () => {
-    const all = scores.some((s) => s > 0) ? [buildRound(), ...rounds] : rounds;
+    const candidates = scores.some((s) => s > 0) ? [buildRound(), ...rounds] : rounds;
+    const good = candidates.filter((r) => summarizeRound(r).holesPlayed >= MIN_EXPORT_HOLES);
+    if (!good.length) { alert(`Engin gögn með a.m.k. ${MIN_EXPORT_HOLES} skráðar holur.`); return; }
     downloadJSON(
-      { exportedAt: new Date().toISOString(), readme: EXPORT_README, rounds: all },
+      { exportedAt: new Date().toISOString(), readme: EXPORT_README, rounds: good },
       `Mosgolf_Gogn_${new Date().toISOString().split('T')[0]}.json`
     );
   };
@@ -1123,11 +1147,15 @@ export default function App() {
   const renderRow = (holeData, index) => {
     const scoreVal = scores[index] || 0;
     const { shape, textColor } = getScoreStyles(scoreVal, holeData.par, theme.scText);
+    // "Sjá meiri gögn": stat line under the row; the row's cells then hand their
+    // bottom border to the stat line so the pair reads as one row.
+    const statLine = (statSheet && statsView) ? sheetLine(sheets[index], holeData.par) : null;
+    const rcs = statLine ? { ...cellStyle, borderBottom: 'none' } : cellStyle;
     return (
       <React.Fragment key={index}>
         <div
           onClick={() => { setCurrentHoleIndex(index); setShowScorecard(false); }}
-          style={{ ...cellStyle, fontWeight: 'bold', cursor: 'pointer', backgroundColor: theme.scHead }}
+          style={{ ...rcs, fontWeight: 'bold', cursor: 'pointer', backgroundColor: theme.scHead }}
           title={`Fara á holu ${holeData.hole}`}
         >
           {holeData.hole}
@@ -1145,10 +1173,10 @@ export default function App() {
             </span>
           )}
         </div>
-        <div style={{ ...cellStyle, fontWeight: 'normal' }}>{holeData.par}</div>
-        
+        <div style={{ ...rcs, fontWeight: 'normal' }}>{holeData.par}</div>
+
         {trackScore && (
-          <div style={{ ...cellStyle }}>
+          <div style={{ ...rcs }}>
             <div style={{ position: 'absolute', zIndex: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {renderScoreShape(shape, theme.scShape)}
             </div>
@@ -1167,7 +1195,7 @@ export default function App() {
         )}
         
         {trackPutts && (
-          <div style={{ ...cellStyle }}>
+          <div style={{ ...rcs }}>
             {isExporting ? (
               <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.scText, fontWeight: 'bold' }}>
                 {putts[index] || ''}
@@ -1183,7 +1211,7 @@ export default function App() {
         )}
         
         {trackGame && (
-          <div style={{ ...cellStyle, padding: '0' }}>
+          <div style={{ ...rcs, padding: '0' }}>
             {isExporting ? (
               <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.scText, fontWeight: 'normal', fontSize: '0.9rem' }}>
                 {matchPlay[index] === 'A' ? 'Halli' : matchPlay[index] === 'B' ? 'Hinir' : matchPlay[index] === 'H' ? 'Féll' : ''}
@@ -1199,6 +1227,16 @@ export default function App() {
                 <option value="H">Féll</option>
               </select>
             )}
+          </div>
+        )}
+
+        {statLine && (
+          <div className="num" style={{
+            gridColumn: '1 / -1', padding: '0 10px 8px', borderBottom: `1px solid ${theme.scLine}`,
+            fontSize: '0.78rem', textAlign: 'center', color: theme.scText, opacity: 0.75,
+            letterSpacing: '0.08em', fontWeight: 600
+          }}>
+            {statLine}
           </div>
         )}
       </React.Fragment>
@@ -1481,7 +1519,13 @@ export default function App() {
           Fyrri
         </button>
       </div>
-      <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', right: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
+      <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', right: '15px', zIndex: 1000, transition: 'bottom 0.3s ease', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '10px' }}>
+        {/* Open the current hole's stat sheet by hand (Skrá gögn sjálfur only) */}
+        {statSheet && (
+          <button onClick={() => openSheet(currentHoleIndex)} title="Skrá gögn" style={{ ...cardStyle, padding: '11px', borderRadius: theme.radius, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <ClipboardList size={20} />
+          </button>
+        )}
         <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ ...cardStyle,padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
           Næsta
         </button>
@@ -1584,6 +1628,19 @@ export default function App() {
               </div>
             </div>
 
+            {/* SJÁ MEIRI GÖGN — per-hole stat lines on/off (Skrá gögn sjálfur only) */}
+            {statSheet && (
+              <div style={{ display: 'flex', justifyContent: 'center', margin: '-12px 0 28px' }}>
+                <button onClick={() => setStatsView((v) => !v)} style={{
+                  background: statsView ? theme.scText : 'transparent',
+                  color: statsView ? theme.scBg : theme.scText,
+                  border: `1px solid ${statsView ? theme.scText : theme.scLine}`,
+                  borderRadius: theme.radius, padding: '8px 14px', fontWeight: 'bold', fontSize: '0.72rem',
+                  cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
+                }}>Sjá meiri gögn</button>
+              </div>
+            )}
+
             {/* NIÐURSTAÐA LEIKS */}
             {trackGame && matchPlayResult && (
               <>
@@ -1613,6 +1670,10 @@ export default function App() {
               </div>
               <button onClick={openGolfBox} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
                 Skrá skor í GolfBox
+              </button>
+              {/* Bulk export (>= MIN_EXPORT_HOLES scored holes per round, with AI readme) */}
+              <button onClick={exportAllData} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
+                Sækja öll gögn
               </button>
             </div>
 
@@ -1814,7 +1875,7 @@ export default function App() {
             </div>
             {courseData[sheetHole].par > 3
               ? sheetGroup('Teighögg', 'tee', [
-                  { v: 'left', l: '← Vinstri' }, { v: 'hit', l: 'Hitt' }, { v: 'right', l: 'Hægri →' }, { v: 'whiff', l: '↓', t: 'Vindhögg' },
+                  { v: 'left', l: '← Vinstri' }, { v: 'hit', l: 'Braut' }, { v: 'right', l: 'Hægri →' }, { v: 'whiff', l: '↓', t: 'Vindhögg' },
                 ])
               : sheetGroup('Á flöt?', 'green', [
                   { v: 'short', l: 'Stutt' }, { v: 'left', l: 'Vinstri' }, { v: 'hit', l: 'Hitt' }, { v: 'right', l: 'Hægri' }, { v: 'long', l: 'Löng' },
