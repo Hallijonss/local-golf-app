@@ -1099,7 +1099,6 @@ export default function App() {
     if (scores.some((s) => s > 0)) setShowClearConfirm(true);
     else if (window.confirm("Þurrka út allt?")) doClearRound();
   };
-
   // --- SHOT MARKS (Snjallskrá) handlers ---
   // Live view records at the GPS fix. Tee view records at the tap marker —
   // manual entry for hazards, forgotten shots and off-course testing.
@@ -2160,8 +2159,8 @@ export default function App() {
               <SettingRow label="Dökkur hamur" checked={darkMode} onChange={setDarkMode} theme={theme} />
               <SettingRow label="Fleiri tölur" checked={!simpleView} onChange={(v) => setSimpleView(!v)} theme={theme} />
               <SettingRow label="Kaddí" checked={showClubRec} onChange={setShowClubRec} theme={theme} />
-              <SettingRow label="Skrá gögn sjálfur" checked={statSheet} onChange={setStatSheetSafe} theme={theme} />
-              <SettingRow label="Snjallskrá" checked={snjallskra} onChange={setSnjallskraSafe} theme={theme} />
+              <SettingRow label="Skrá gögn sjálfur" checked={statSheet} onChange={setStatSheet} theme={theme} />
+              <SettingRow label="Snjallskrá" checked={snjallskra} onChange={setSnjallskra} theme={theme} />
               {/* Handicap is typed in — GolfBox is cross-origin, unreadable from here */}
               <div style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
