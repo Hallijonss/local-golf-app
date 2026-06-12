@@ -603,6 +603,9 @@ export default function App() {
   // Shot marks for the live round + brief button-press flash.
   const [marks, setMarks] = useState(loadMarks);
   const [markFlash, setMarkFlash] = useState(false);
+  // Length of the shot just recorded (metres) — shown briefly, then fades away.
+  const [lastShotLen, setLastShotLen] = useState(null);
+  const shotLenTimer = useRef(null);
   // Live-round stat sheets + which hole's sheet is open (null = closed) + draft.
   const [sheets, setSheets] = useState(loadSheets);
   const [sheetHole, setSheetHole] = useState(null);
@@ -804,8 +807,11 @@ export default function App() {
     if (gpsLocation.accuracy != null && gpsLocation.accuracy <= 30) center();
   }, [gpsLocation, isTeeView, currentHoleIndex]);
 
-  // Clear any pending auto-frame timer on unmount.
-  useEffect(() => () => { if (autoCenter.current.timer) clearTimeout(autoCenter.current.timer); }, []);
+  // Clear any pending auto-frame / shot-length timers on unmount.
+  useEffect(() => () => {
+    if (autoCenter.current.timer) clearTimeout(autoCenter.current.timer);
+    clearTimeout(shotLenTimer.current);
+  }, []);
 
   useEffect(() => { setTargetPoint(null); }, [currentHoleIndex]);
 
@@ -1059,6 +1065,12 @@ export default function App() {
   const addMark = () => {
     if (!canMark) return;
     const mk = { lat: gpsLocation.lat, lng: gpsLocation.lng, accuracy: gpsLocation.accuracy ?? null, t: Date.now() };
+    // Length of this shot: from the previous mark, or the tee for the first one.
+    const cur = marks[currentHoleIndex] || [];
+    const from = cur.length ? cur[cur.length - 1] : currentHole.teeLocation;
+    setLastShotLen(calculateDistanceInMeters(from.lat, from.lng, mk.lat, mk.lng));
+    clearTimeout(shotLenTimer.current);
+    shotLenTimer.current = setTimeout(() => setLastShotLen(null), 2600);
     setMarks((prev) => prev.map((m, i) => (i === currentHoleIndex ? [...m, mk] : m)));
     setMarkFlash(true);
     setTimeout(() => setMarkFlash(false), 350);
@@ -1740,6 +1752,19 @@ export default function App() {
           Næsta
         </button>
       </div>
+
+      {/* SHOT LENGTH TOAST — the shot just recorded, centered between Fyrri/Næsta */}
+      {lastShotLen !== null && (
+        <div style={{
+          position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)',
+          left: '50%', transform: 'translateX(-50%)', zIndex: 1000, pointerEvents: 'none',
+          ...cardStyle, borderRadius: theme.radius, padding: '9px 16px',
+          display: 'flex', alignItems: 'baseline', gap: '5px', animation: 'sheetUp 0.18s ease-out'
+        }}>
+          <span className="num" style={{ fontSize: '1.7rem', fontWeight: 700, lineHeight: 0.9 }}>{lastShotLen}</span>
+          <span style={{ ...microLabel, fontSize: '0.55rem' }}>m högg</span>
+        </div>
+      )}
 
       {/* UNIFIED SCORING & LEIKUR FOOTER */}
       {showFooter && (
