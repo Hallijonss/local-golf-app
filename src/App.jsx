@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { courseData, courseMeta } from './courseData';
 import { greenData } from './greenData';
+import { featureData } from './featureData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
 import { MapContainer, Marker, useMapEvents, Polyline, Polygon, Circle, useMap, TileLayer } from 'react-leaflet';
 import { divIcon } from 'leaflet';
@@ -219,6 +220,46 @@ const createChip = (distance, size = 13) => divIcon({
   iconSize: [0, 0], iconAnchor: [0, 0]
 });
 
+// --- SHOT MARKS (Snjallskrá) ---
+// Small white dot for a recorded shot position (module scope — never inline).
+const markDotIcon = divIcon({
+  className: '',
+  html: `<svg width="12" height="12" viewBox="0 0 12 12" style="display:block; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6));">
+      <circle cx="6" cy="6" r="4" fill="none" stroke="#ffffff" stroke-width="2" />
+    </svg>`,
+  iconSize: [12, 12], iconAnchor: [6, 6]
+});
+
+// Ray-cast point-in-polygon over a { lat, lng } ring.
+const pointInPolygon = (lat, lng, poly) => {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.lat > lat) !== (b.lat > lat) && lng < (b.lng - a.lng) * (lat - a.lat) / (b.lat - a.lat) + a.lng) {
+      inside = !inside;
+    }
+  }
+  return inside;
+};
+
+// What a marked shot position landed in: bunkers win over fairways (a bunker
+// can sit inside a fairway outline); anything else is unknown — never guessed.
+const surfaceAt = (lat, lng) => {
+  for (const b of featureData.bunkers) if (pointInPolygon(lat, lng, b)) return 'bunker';
+  for (const f of featureData.fairways) if (pointInPolygon(lat, lng, f)) return 'fairway';
+  return null;
+};
+
+// Working shot marks for the live round (NEW key 'myMarks'): 18 × arrays of
+// { lat, lng, accuracy, t }. Survives reloads like the live scores do.
+const loadMarks = () => {
+  const v = loadJSON('myMarks', null);
+  if (!Array.isArray(v) || v.length !== 18) return Array(18).fill().map(() => []);
+  return v.map((m) => Array.isArray(m)
+    ? m.filter((p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lng))
+    : []);
+};
+
 // --- FRONT/BACK OF GREEN ---
 // Beyond this distance the green is too far to bother showing front/back.
 const MAX_FB_DISTANCE = 300;
@@ -372,7 +413,10 @@ const loadRound = (key, fill) => {
 //       green: 'short'|'left'|'hit'|'right'|'long'|null,//   par 3 "Á flöt?"
 //       bunker: 0|1|2|null, penalty: 0|1|2|null,        //   2 means "2+"
 //       firstPutt: '<1'|'1-3'|'3-10'|'10+'|null },      //   metres
-//     marks: [],                                        // stage 4 fills
+//     marks: [ { lat, lng, accuracy, t } ],             // stage 4: raw GPS shot marks
+//     shots: [ 'string per stroke' ],                   // stage 4: derived at save time
+//       — '<len>m[, fairway|bunker], <toGreen>m to green' for each marked shot,
+//         'no info' for unmarked strokes, 'putt' × putts. Nothing is guessed.
 //   } ],
 // }
 // Stored newest-first in the NEW localStorage key 'myRounds' (live round keys
@@ -408,7 +452,10 @@ const EXPORT_README =
   'green: tee-shot result relative to the green on par 3 ("short"|"left"|"hit"|"right"|"long"), ' +
   'bunker: bunker shots taken (0|1|2 where 2 means 2 or more), penalty: penalty strokes (same scale), ' +
   'firstPutt: first-putt length in metres ("<1"|"1-3"|"3-10"|"10+") } — any field may be null (unanswered; partial data is normal). ' +
-  'marks = raw GPS points (lat/lng) the player tapped during the hole — NOT classified shots; do not assume each mark is a stroke.';
+  'marks = raw GPS points ({lat, lng, accuracy in metres, t = unix ms}) recorded by the player pressing a button right where each shot was played. ' +
+  'shots = the same data made readable, one string per stroke in order: "<length>m[, fairway|bunker], <distance>m to green" for a GPS-marked shot ' +
+  '(surface comes from traced course polygons; absent = unknown lie), "no info" for strokes the player did not mark, and "putt" for each recorded putt. ' +
+  'Nothing is derived beyond that — missing data stays missing.';
 
 // Download an object as pretty-printed JSON via a temporary Blob link (no deps).
 const downloadJSON = (obj, filename) => {
@@ -549,10 +596,13 @@ export default function App() {
   const [trackScore, setTrackScore] = useState(() => loadJSON('trackScore', true));
   const [trackPutts, setTrackPutts] = useState(() => loadJSON('trackPutts', false));
   const [trackGame, setTrackGame] = useState(() => loadJSON('trackGame', false));
-  // "Rekja skot" — reserved for the upcoming shot-tracking feature; unused for now.
-  const [trackShots, setTrackShots] = useState(() => loadJSON('trackShots', false));
+  // "Snjallskrá" — GPS shot-mark mode (replaces the old "Rekja skot" placeholder).
+  const [snjallskra, setSnjallskra] = useState(() => loadJSON('snjallskra', false));
   // "Skrá gögn sjálfur" — post-hole stat sheet on/off.
   const [statSheet, setStatSheet] = useState(() => loadJSON('statSheet', false));
+  // Shot marks for the live round + brief button-press flash.
+  const [marks, setMarks] = useState(loadMarks);
+  const [markFlash, setMarkFlash] = useState(false);
   // Live-round stat sheets + which hole's sheet is open (null = closed) + draft.
   const [sheets, setSheets] = useState(loadSheets);
   const [sheetHole, setSheetHole] = useState(null);
@@ -663,15 +713,16 @@ export default function App() {
     localStorage.setItem('trackScore', JSON.stringify(trackScore));
     localStorage.setItem('trackPutts', JSON.stringify(trackPutts));
     localStorage.setItem('trackGame', JSON.stringify(trackGame));
-    localStorage.setItem('trackShots', JSON.stringify(trackShots));
+    localStorage.setItem('snjallskra', JSON.stringify(snjallskra));
     localStorage.setItem('statSheet', JSON.stringify(statSheet));
     localStorage.setItem('mySheets', JSON.stringify(sheets));
+    localStorage.setItem('myMarks', JSON.stringify(marks));
     localStorage.setItem('myHandicap', handicap);
     localStorage.setItem('simpleView', JSON.stringify(simpleView));
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
     localStorage.setItem('myBag', JSON.stringify(bag));
     localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, statSheet, sheets, handicap, simpleView, darkMode, bag, showClubRec]);
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, snjallskra, statSheet, sheets, marks, handicap, simpleView, darkMode, bag, showClubRec]);
 
   // Saved rounds live in their own NEW key; the live-round keys above stay as-is.
   useEffect(() => {
@@ -895,7 +946,7 @@ export default function App() {
     holes: courseData.map((h, i) => ({
       hole: h.hole, par: h.par,
       score: scores[i] || 0, putts: putts[i] || 0, match: matchPlay[i] || '',
-      sheet: sheets[i] || null, marks: [],
+      sheet: sheets[i] || null, marks: marks[i] || [], shots: deriveShots(i),
     })),
   });
   // Built outside the setState updater so StrictMode's double-invoke stays pure.
@@ -988,7 +1039,7 @@ export default function App() {
     setMatchPlay(Array(18).fill(''));
     setSheets(Array(18).fill(null));
     setSheetHole(null);
-    // Later stages: also reset the marks working state here.
+    setMarks(Array(18).fill().map(() => []));
     setShowScorecard(false);
     setCurrentHoleIndex(0);
   };
@@ -997,6 +1048,63 @@ export default function App() {
   const clearRound = () => {
     if (scores.some((s) => s > 0)) setShowClearConfirm(true);
     else if (window.confirm("Þurrka út allt?")) doClearRound();
+  };
+
+  // Snjallskrá and Skrá gögn sjálfur are mutually exclusive (both may be off).
+  const setSnjallskraSafe = (v) => { setSnjallskra(v); if (v) setStatSheet(false); };
+  const setStatSheetSafe = (v) => { setStatSheet(v); if (v) setSnjallskra(false); };
+
+  // --- SHOT MARKS (Snjallskrá) handlers ---
+  const canMark = snjallskra && !isTeeView && !!gpsLocation;
+  const addMark = () => {
+    if (!canMark) return;
+    const mk = { lat: gpsLocation.lat, lng: gpsLocation.lng, accuracy: gpsLocation.accuracy ?? null, t: Date.now() };
+    setMarks((prev) => prev.map((m, i) => (i === currentHoleIndex ? [...m, mk] : m)));
+    setMarkFlash(true);
+    setTimeout(() => setMarkFlash(false), 350);
+  };
+  const undoLastMark = () => {
+    if (!(marks[currentHoleIndex] || []).length) return;
+    if (window.confirm('Afturkalla síðasta högg?')) {
+      setMarks((prev) => prev.map((m, i) => (i === currentHoleIndex ? m.slice(0, -1) : m)));
+    }
+  };
+  // Long-press = undo; a normal tap that follows a fired long-press is swallowed.
+  const markPress = useRef({ timer: null, fired: false });
+  const markPressStart = () => {
+    markPress.current.fired = false;
+    markPress.current.timer = setTimeout(() => {
+      markPress.current.fired = true;
+      markPress.current.timer = null;
+      undoLastMark();
+    }, 600);
+  };
+  const markPressEnd = () => {
+    if (markPress.current.timer) { clearTimeout(markPress.current.timer); markPress.current.timer = null; }
+  };
+  const markClick = () => { if (!markPress.current.fired) addMark(); };
+
+  // One readable string per stroke, in order: marked shots (length, surface from
+  // the traced polygons, distance to green centre), then unmarked strokes as
+  // 'no info', then recorded putts. Nothing is guessed (see EXPORT_README).
+  const deriveShots = (i) => {
+    const green = courseData[i].greenLocation;
+    const shots = [];
+    let prev = courseData[i].teeLocation;
+    for (const m of marks[i] || []) {
+      const len = calculateDistanceInMeters(prev.lat, prev.lng, m.lat, m.lng);
+      const toGreen = calculateDistanceInMeters(m.lat, m.lng, green.lat, green.lng);
+      const surf = surfaceAt(m.lat, m.lng);
+      shots.push(`${len}m${surf ? `, ${surf}` : ''}, ${toGreen}m to green`);
+      prev = m;
+    }
+    const score = scores[i] || 0, p = putts[i] || 0;
+    if (score > 0) {
+      const unknown = Math.max(0, score - shots.length - p);
+      for (let k = 0; k < unknown; k++) shots.push('no info');
+      for (let k = 0; k < Math.min(p, score); k++) shots.push('putt');
+    }
+    return shots;
   };
 
   // --- STAT SHEET handlers ---
@@ -1435,6 +1543,18 @@ export default function App() {
           {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
           {userLocation && targetPoint && <BrokenPolyline a={userLocation} b={targetPoint} meters={distanceUserToTarget} />}
           {targetPoint && <BrokenPolyline a={targetPoint} b={currentHole.greenLocation} meters={distanceTargetToGreen} />}
+          {/* Snjallskrá: dashed tee → shot → shot trail + a dot per recorded shot */}
+          {snjallskra && (marks[currentHoleIndex] || []).length > 0 && (
+            <>
+              <Polyline
+                positions={[[currentHole.teeLocation.lat, currentHole.teeLocation.lng], ...marks[currentHoleIndex].map((m) => [m.lat, m.lng])]}
+                pathOptions={{ color: 'white', weight: 2, opacity: 0.85, dashArray: '4 6' }}
+              />
+              {marks[currentHoleIndex].map((m) => (
+                <Marker key={m.t} position={[m.lat, m.lng]} icon={markDotIcon} rotateWithView={false} />
+              ))}
+            </>
+          )}
         </MapContainer>
       </div>
 
@@ -1460,6 +1580,34 @@ export default function App() {
         {!isTeeView && (
           <div onClick={() => setCenterTrigger(c => c + 1)} style={{ ...cardStyle,padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
             <Crosshair size={20} />
+          </div>
+        )}
+        {/* SKRÁ HÖGG — record a shot at the current GPS fix; long-press = undo last */}
+        {snjallskra && (
+          <div
+            onClick={markClick}
+            onMouseDown={markPressStart} onMouseUp={markPressEnd} onMouseLeave={markPressEnd}
+            onTouchStart={markPressStart} onTouchEnd={markPressEnd} onTouchCancel={markPressEnd}
+            onContextMenu={(e) => e.preventDefault()}
+            title="Skrá högg (halda inni = afturkalla)"
+            style={{
+              ...cardStyle, padding: '11px 8px', borderRadius: theme.radius, position: 'relative',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+              cursor: canMark ? 'pointer' : 'default', opacity: canMark ? 1 : 0.45,
+              background: markFlash ? theme.accent : theme.panel, transition: 'background 0.15s ease',
+              fontWeight: 700, fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.08em',
+              userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation'
+            }}
+          >
+            Skrá<br />högg
+            {(marks[currentHoleIndex] || []).length > 0 && (
+              <span className="num" style={{
+                position: 'absolute', top: '-7px', right: '-7px', minWidth: '18px', height: '18px',
+                borderRadius: '9px', background: theme.chip.bg, color: theme.chip.fg,
+                border: `1px solid ${theme.chip.border}`, display: 'flex', alignItems: 'center',
+                justifyContent: 'center', fontSize: '0.62rem', fontWeight: 700, padding: '0 4px', boxSizing: 'border-box'
+              }}>{marks[currentHoleIndex].length}</span>
+            )}
           </div>
         )}
       </div>
@@ -1846,8 +1994,8 @@ export default function App() {
               <SettingRow label="Dökkur hamur" checked={darkMode} onChange={setDarkMode} theme={theme} />
               <SettingRow label="Fleiri tölur" checked={!simpleView} onChange={(v) => setSimpleView(!v)} theme={theme} />
               <SettingRow label="Kaddí" checked={showClubRec} onChange={setShowClubRec} theme={theme} />
-              <SettingRow label="Skrá gögn sjálfur" checked={statSheet} onChange={setStatSheet} theme={theme} />
-              <SettingRow label="Rekja skot" checked={trackShots} onChange={setTrackShots} theme={theme} />
+              <SettingRow label="Skrá gögn sjálfur" checked={statSheet} onChange={setStatSheetSafe} theme={theme} />
+              <SettingRow label="Snjallskrá" checked={snjallskra} onChange={setSnjallskraSafe} theme={theme} />
               {/* Handicap is typed in — GolfBox is cross-origin, unreadable from here */}
               <div style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',

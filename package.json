@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "bake:greens": "node scripts/bakeGreens.mjs",
+    "bake:features": "node scripts/bakeFeatures.mjs",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
     "lint": "eslint .",
