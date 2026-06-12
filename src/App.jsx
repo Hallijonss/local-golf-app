@@ -250,6 +250,17 @@ const surfaceAt = (lat, lng) => {
   return null;
 };
 
+// Signed sideways offset (metres) of point M from the line A→B as seen from A:
+// negative = left of the line, positive = right.
+const lateralOffset = (A, B, M) => {
+  const mx = 111320 * Math.cos(A.lat * Math.PI / 180), my = 110540;
+  const bx = (B.lng - A.lng) * mx, by = (B.lat - A.lat) * my;
+  const px = (M.lng - A.lng) * mx, py = (M.lat - A.lat) * my;
+  const len = Math.hypot(bx, by) || 1;
+  // 2D cross product: positive when M lies left of A→B (x east, y north) — flip.
+  return Math.round(-(bx * py - by * px) / len);
+};
+
 // Working shot marks for the live round (NEW key 'myMarks'): 18 × arrays of
 // { lat, lng, accuracy, t }. Survives reloads like the live scores do.
 const loadMarks = () => {
@@ -453,9 +464,10 @@ const EXPORT_README =
   'bunker: bunker shots taken (0|1|2 where 2 means 2 or more), penalty: penalty strokes (same scale), ' +
   'firstPutt: first-putt length in metres ("<1"|"1-3"|"3-10"|"10+") } — any field may be null (unanswered; partial data is normal). ' +
   'marks = raw GPS points ({lat, lng, accuracy in metres, t = unix ms}) recorded by the player pressing a button right where each shot was played. ' +
-  'shots = the same data made readable, one string per stroke in order: "<length>m[, fairway|bunker], <distance>m to green" for a GPS-marked shot ' +
-  '(surface comes from traced course polygons; absent = unknown lie), "no info" for strokes the player did not mark, and "putt" for each recorded putt. ' +
-  'Nothing is derived beyond that — missing data stays missing.';
+  'shots = the same data made readable, one string per stroke in order: "<length>m[, fairway|bunker], <offset>, <distance>m to green" for a GPS-marked shot, ' +
+  '"no info" for strokes the player did not mark, and "putt" for each recorded putt. Surface comes from traced course polygons (absent = unknown lie). ' +
+  "<offset> is the sideways miss versus the intended line — tee shots are measured against the hole's ideal safe driving line (so dogleg holes are judged fairly), " +
+  'later shots against the straight line to the green; "on line" means within 3 m. Nothing is derived beyond that — missing data stays missing.';
 
 // Download an object as pretty-printed JSON via a temporary Blob link (no deps).
 const downloadJSON = (obj, filename) => {
@@ -1014,6 +1026,14 @@ export default function App() {
     // WHS course handicap: index × slope/113 + (CR − par).
     const courseHcp = hasHcp ? Math.round(hcp * courseMeta.slope / 113 + (courseMeta.cr - courseMeta.par)) : null;
     const ranks = courseData.map((h) => `${h.hole}:${h.rank}`).join(' ');
+    // Hole shapes from the baked aim points: dogleg direction + severity.
+    const shapes = courseData.map((h, i) => {
+      const a = featureData.aims[i];
+      if (!a) return `${h.hole}:straight (par 3)`;
+      const mag = Math.abs(a.dogleg);
+      const lbl = mag < 10 ? 'straight' : `${mag >= 30 ? 'hard' : 'slight'} ${a.dogleg > 0 ? 'right' : 'left'} (${mag}°)`;
+      return `${h.hole}:${lbl}`;
+    }).join(', ');
     return (
       `You are a golf coaching simulator. The player is an amateur golfer` +
       `${hasHcp ? ` with a handicap index of ${hcp}` : ' (handicap index unknown)'} playing their home course.\n\n` +
@@ -1026,7 +1046,8 @@ export default function App() {
       `COURSE: ${courseMeta.name} (Mosfellsbaer, Iceland) - 18 holes, par ${courseMeta.par}, ` +
       `course rating ${courseMeta.cr}, slope ${courseMeta.slope}.` +
       `${hasHcp ? ` The player's course handicap here is about ${courseHcp}.` : ''}\n` +
-      `Stroke index by hole: ${ranks}\n\n` +
+      `Stroke index by hole: ${ranks}\n` +
+      `Hole shapes (dogleg from the ideal driving line): ${shapes}\n\n` +
       `DATA FORMAT: ${EXPORT_README}\n\n` +
       `ROUNDS (JSON):\n${JSON.stringify(sel, null, 1)}`
     );
@@ -1097,19 +1118,25 @@ export default function App() {
   const markClick = () => { if (!markPress.current.fired) addMark(); };
 
   // One readable string per stroke, in order: marked shots (length, surface from
-  // the traced polygons, distance to green centre), then unmarked strokes as
-  // 'no info', then recorded putts. Nothing is guessed (see EXPORT_README).
+  // the traced polygons, sideways miss vs the intended line, distance to green
+  // centre), then unmarked strokes as 'no info', then recorded putts. The tee
+  // shot is measured against the hole's ideal driving line (aim point) when one
+  // exists; every other shot against the straight line to the green. Nothing is
+  // guessed (see EXPORT_README).
   const deriveShots = (i) => {
     const green = courseData[i].greenLocation;
+    const aim = featureData.aims[i];
     const shots = [];
     let prev = courseData[i].teeLocation;
-    for (const m of marks[i] || []) {
+    (marks[i] || []).forEach((m, k) => {
       const len = calculateDistanceInMeters(prev.lat, prev.lng, m.lat, m.lng);
       const toGreen = calculateDistanceInMeters(m.lat, m.lng, green.lat, green.lng);
       const surf = surfaceAt(m.lat, m.lng);
-      shots.push(`${len}m${surf ? `, ${surf}` : ''}, ${toGreen}m to green`);
+      const off = lateralOffset(prev, (k === 0 && aim) ? aim : green, m);
+      const offTxt = Math.abs(off) < 3 ? 'on line' : `${Math.abs(off)}m ${off < 0 ? 'left' : 'right'} of line`;
+      shots.push(`${len}m${surf ? `, ${surf}` : ''}, ${offTxt}, ${toGreen}m to green`);
       prev = m;
-    }
+    });
     const score = scores[i] || 0, p = putts[i] || 0;
     if (score > 0) {
       const unknown = Math.max(0, score - shots.length - p);
