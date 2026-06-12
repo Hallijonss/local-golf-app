@@ -421,20 +421,6 @@ const downloadJSON = (obj, filename) => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
-// Compact one-line summary of a hole's stat sheet for the "Sjá meiri gögn" rows:
-// arrows for the tee shot (↑ = braut/flöt, ↓ = vindhögg; S/L = stutt/löng on par 3),
-// G = glompuhögg, V = víti, P = fyrsta pútt. Only answered fields show.
-const sheetLine = (sheet, par) => {
-  if (!sheet || typeof sheet !== 'object') return null;
-  const parts = [];
-  if (par > 3 && sheet.tee) parts.push({ left: '←', hit: '↑', right: '→', whiff: '↓' }[sheet.tee]);
-  if (par === 3 && sheet.green) parts.push({ short: 'S', left: '←', hit: '↑', right: '→', long: 'L' }[sheet.green]);
-  if (sheet.bunker) parts.push(`G${sheet.bunker === 2 ? '2+' : sheet.bunker}`);
-  if (sheet.penalty) parts.push(`V${sheet.penalty === 2 ? '2+' : sheet.penalty}`);
-  if (sheet.firstPutt) parts.push(`P ${({ '<1': '<1m', '1-3': '1–3m', '3-10': '3–10m', '10+': '10m+' })[sheet.firstPutt] || sheet.firstPutt}`);
-  return parts.length ? parts.join(' · ') : null;
-};
-
 // Rounds with fewer scored holes than this are left out of the bulk export —
 // they're abandoned cards, not data.
 const MIN_EXPORT_HOLES = 6;
@@ -571,8 +557,6 @@ export default function App() {
   const [sheets, setSheets] = useState(loadSheets);
   const [sheetHole, setSheetHole] = useState(null);
   const [sheetDraft, setSheetDraft] = useState({});
-  // "Sjá meiri gögn" — show per-hole stat lines under the scorecard rows.
-  const [statsView, setStatsView] = useState(() => loadJSON('statsView', false));
 
   // Simple view: map shows only the centre distance (no elevation, wind, F/B).
   const [simpleView, setSimpleView] = useState(() => loadJSON('simpleView', false));
@@ -682,13 +666,12 @@ export default function App() {
     localStorage.setItem('trackShots', JSON.stringify(trackShots));
     localStorage.setItem('statSheet', JSON.stringify(statSheet));
     localStorage.setItem('mySheets', JSON.stringify(sheets));
-    localStorage.setItem('statsView', JSON.stringify(statsView));
     localStorage.setItem('myHandicap', handicap);
     localStorage.setItem('simpleView', JSON.stringify(simpleView));
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
     localStorage.setItem('myBag', JSON.stringify(bag));
     localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, statSheet, sheets, statsView, handicap, simpleView, darkMode, bag, showClubRec]);
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, statSheet, sheets, handicap, simpleView, darkMode, bag, showClubRec]);
 
   // Saved rounds live in their own NEW key; the live-round keys above stay as-is.
   useEffect(() => {
@@ -1034,8 +1017,8 @@ export default function App() {
     setSheets((prev) => prev.map((v, i) => (i === sheetHole ? s : v)));
     setSheetHole(null);
   };
-  // Sleppa marks the hole 'skipped' so it isn't asked again; when re-editing an
-  // already saved sheet it just closes without touching the data.
+  // Loka (and tapping outside the box) marks the hole 'skipped' so it isn't asked
+  // again; when re-editing an already saved sheet it closes without touching data.
   const skipSheet = () => {
     setSheets((prev) => prev.map((v, i) => (i === sheetHole && (v == null || v === 'skipped')) ? 'skipped' : v));
     setSheetHole(null);
@@ -1206,23 +1189,19 @@ export default function App() {
   const renderRow = (holeData, index) => {
     const scoreVal = scores[index] || 0;
     const { shape, textColor } = getScoreStyles(scoreVal, holeData.par, theme.scText);
-    // "Sjá meiri gögn": stat line under the row; the row's cells then hand their
-    // bottom border to the stat line so the pair reads as one row.
-    const statLine = (statSheet && statsView) ? sheetLine(sheets[index], holeData.par) : null;
-    const rcs = statLine ? { ...cellStyle, borderBottom: 'none' } : cellStyle;
     return (
       <React.Fragment key={index}>
         <div
           onClick={() => { setCurrentHoleIndex(index); setShowScorecard(false); }}
-          style={{ ...rcs, fontWeight: 'bold', cursor: 'pointer', backgroundColor: theme.scHead }}
+          style={{ ...cellStyle, fontWeight: 'bold', cursor: 'pointer', backgroundColor: theme.scHead }}
           title={`Fara á holu ${holeData.hole}`}
         >
           {holeData.hole}
         </div>
-        <div style={{ ...rcs, fontWeight: 'normal' }}>{holeData.par}</div>
+        <div style={{ ...cellStyle, fontWeight: 'normal' }}>{holeData.par}</div>
 
         {trackScore && (
-          <div style={{ ...rcs }}>
+          <div style={{ ...cellStyle }}>
             <div style={{ position: 'absolute', zIndex: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {renderScoreShape(shape, theme.scShape)}
             </div>
@@ -1241,7 +1220,7 @@ export default function App() {
         )}
         
         {trackPutts && (
-          <div style={{ ...rcs }}>
+          <div style={{ ...cellStyle }}>
             {/* Small check when every sheet question for this hole is answered */}
             {statSheet && !isExporting && isSheetComplete(sheets[index], holeData.par) && (
               <span style={{ position: 'absolute', top: '1px', right: '3px', fontSize: '0.6rem', opacity: 0.7, zIndex: 3, pointerEvents: 'none' }}>✓</span>
@@ -1261,7 +1240,7 @@ export default function App() {
         )}
         
         {trackGame && (
-          <div style={{ ...rcs, padding: '0' }}>
+          <div style={{ ...cellStyle, padding: '0' }}>
             {isExporting ? (
               <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.scText, fontWeight: 'normal', fontSize: '0.9rem' }}>
                 {matchPlay[index] === 'A' ? 'Halli' : matchPlay[index] === 'B' ? 'Hinir' : matchPlay[index] === 'H' ? 'Féll' : ''}
@@ -1280,15 +1259,6 @@ export default function App() {
           </div>
         )}
 
-        {statLine && (
-          <div className="num" style={{
-            gridColumn: '1 / -1', padding: '0 10px 8px', borderBottom: `1px solid ${theme.scLine}`,
-            fontSize: '0.78rem', textAlign: 'center', color: theme.scText, opacity: 0.75,
-            letterSpacing: '0.08em', fontWeight: 600
-          }}>
-            {statLine}
-          </div>
-        )}
       </React.Fragment>
     );
   };
@@ -1678,19 +1648,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* SJÁ MEIRI GÖGN — per-hole stat lines on/off (Skrá gögn sjálfur only) */}
-            {statSheet && (
-              <div style={{ display: 'flex', justifyContent: 'center', margin: '-12px 0 28px' }}>
-                <button onClick={() => setStatsView((v) => !v)} style={{
-                  background: statsView ? theme.scText : 'transparent',
-                  color: statsView ? theme.scBg : theme.scText,
-                  border: `1px solid ${statsView ? theme.scText : theme.scLine}`,
-                  borderRadius: theme.radius, padding: '8px 14px', fontWeight: 'bold', fontSize: '0.72rem',
-                  cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
-                }}>Sjá meiri gögn</button>
-              </div>
-            )}
-
             {/* Buttons live directly under the card — no section headings */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%', marginBottom: '28px' }}>
               <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
@@ -1920,8 +1877,9 @@ export default function App() {
 
       {/* POST-HOLE STAT SHEET — slides up over the map; buttons only, all optional */}
       {sheetHole !== null && (
-        <div style={{ position: 'absolute', inset: 0, zIndex: 20000, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-          <div style={{
+        <div onClick={skipSheet} style={{ position: 'absolute', inset: 0, zIndex: 20000, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          {/* Tapping the course (outside the box) closes the sheet, same as Loka */}
+          <div onClick={(e) => e.stopPropagation()} style={{
             ...cardStyle, borderRadius: `${theme.radius} ${theme.radius} 0 0`,
             padding: '14px 16px calc(env(safe-area-inset-bottom, 12px) + 12px)',
             animation: 'sheetUp 0.22s ease-out'
@@ -1940,7 +1898,7 @@ export default function App() {
             {sheetGroup('Víti', 'penalty', [{ v: 0, l: '0' }, { v: 1, l: '1' }, { v: 2, l: '2+' }])}
             {sheetGroup('Fyrsta pútt', 'firstPutt', [{ v: '<1', l: '<1m' }, { v: '1-3', l: '1–3m' }, { v: '3-10', l: '3–10m' }, { v: '10+', l: '10m+' }])}
             <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
-              <div onClick={skipSheet} style={{ ...sheetOptStyle(false), padding: '12px 2px', fontSize: '0.8rem' }}>Sleppa</div>
+              <div onClick={skipSheet} style={{ ...sheetOptStyle(false), padding: '12px 2px', fontSize: '0.8rem' }}>Loka</div>
               <div onClick={saveSheet} style={{ ...sheetOptStyle(true), padding: '12px 2px', fontSize: '0.8rem' }}>Vista</div>
             </div>
           </div>
