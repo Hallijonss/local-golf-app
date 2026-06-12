@@ -439,6 +439,11 @@ const sheetLine = (sheet, par) => {
 // they're abandoned cards, not data.
 const MIN_EXPORT_HOLES = 6;
 
+// Every applicable sheet question answered? (tee on par 4/5, green on par 3.)
+const isSheetComplete = (sheet, par) => !!sheet && typeof sheet === 'object' &&
+  (par > 3 ? sheet.tee != null : sheet.green != null) &&
+  sheet.bunker != null && sheet.penalty != null && sheet.firstPutt != null;
+
 // Out/in/total strokes, par diff over the holes actually played, total putts.
 const summarizeRound = (r) => {
   let out = 0, inn = 0, parPlayed = 0, holesPlayed = 0, puttsTotal = 0;
@@ -691,22 +696,19 @@ export default function App() {
     m.content = darkMode ? '#0b1813' : '#0a4d2a';
   }, [darkMode]);
 
-  const matchPlayResult = useMemo(() => {
-    if (!trackGame) return '';
-    let aWins = 0, bWins = 0, holesLogged = 0;
-    matchPlay.forEach(val => {
-      if (val === 'A') aWins++;
-      else if (val === 'B') bWins++;
-      if (val !== '') holesLogged++;
-    });
-    const diff = aWins - bWins;
-    const absDiff = Math.abs(diff);
-    const strokeWord = absDiff === 1 ? 'höggi' : 'höggum';
-    const verb = holesLogged === 18 ? 'vann' : 'er að vinna';
-    if (diff > 0) return `Halli ${verb} með ${absDiff} ${strokeWord}`;
-    if (diff < 0) return `Hinir ${verb} með ${absDiff} ${strokeWord}`;
-    return 'Jafntefli';
-  }, [matchPlay, trackGame]);
+  // Match status over a hole range for the LEIKUR summary cells (ÚT/INN/TOT):
+  // "Halli +n" / "Hinir +n" / "Jafnt", or '' while nothing is logged in the range.
+  const matchSummary = (start, end) => {
+    let a = 0, b = 0, logged = 0;
+    for (let i = start; i < end; i++) {
+      if (matchPlay[i] === 'A') a++;
+      else if (matchPlay[i] === 'B') b++;
+      if (matchPlay[i]) logged++;
+    }
+    if (!logged) return '';
+    const d = a - b;
+    return d > 0 ? `Halli +${d}` : d < 0 ? `Hinir +${-d}` : 'Jafnt';
+  };
 
   useEffect(() => {
     if (isTeeView) return;
@@ -1159,19 +1161,6 @@ export default function App() {
           title={`Fara á holu ${holeData.hole}`}
         >
           {holeData.hole}
-          {/* Stat-sheet re-edit: tiny corner icon; the row tap still navigates */}
-          {statSheet && !isExporting && (
-            <span
-              onClick={(e) => { e.stopPropagation(); openSheet(index); }}
-              title="Skrá gögn"
-              style={{
-                position: 'absolute', top: 0, right: 0, padding: '3px 4px', display: 'flex',
-                cursor: 'pointer', opacity: (sheets[index] && sheets[index] !== 'skipped') ? 0.9 : 0.35
-              }}
-            >
-              <ClipboardList size={11} />
-            </span>
-          )}
         </div>
         <div style={{ ...rcs, fontWeight: 'normal' }}>{holeData.par}</div>
 
@@ -1196,6 +1185,10 @@ export default function App() {
         
         {trackPutts && (
           <div style={{ ...rcs }}>
+            {/* Small check when every sheet question for this hole is answered */}
+            {statSheet && !isExporting && isSheetComplete(sheets[index], holeData.par) && (
+              <span style={{ position: 'absolute', top: '1px', right: '3px', fontSize: '0.6rem', opacity: 0.7, zIndex: 3, pointerEvents: 'none' }}>✓</span>
+            )}
             {isExporting ? (
               <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.scText, fontWeight: 'bold' }}>
                 {putts[index] || ''}
@@ -1612,18 +1605,18 @@ export default function App() {
                   <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{courseData.slice(0, 9).reduce((sum, h) => sum + h.par, 0)}</div>
                   {trackScore && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{calculateTotal(scores, 0, 9)}</div>}
                   {trackPutts && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{calculateTotal(putts, 0, 9)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}></div>}
+                  {trackGame && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}><span style={{ fontSize: '0.65rem' }}>{matchSummary(0, 9)}</span></div>}
                   {courseData.slice(9, 18).map((hole, i) => renderRow(hole, i + 9))}
                   <div style={{ ...summaryCellStyle }}>INN</div>
                   <div style={summaryCellStyle}>{courseData.slice(9, 18).reduce((sum, h) => sum + h.par, 0)}</div>
                   {trackScore && <div style={summaryCellStyle}>{calculateTotal(scores, 9, 18)}</div>}
                   {trackPutts && <div style={summaryCellStyle}>{calculateTotal(putts, 9, 18)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle }}></div>}
+                  {trackGame && <div style={{ ...summaryCellStyle }}><span style={{ fontSize: '0.65rem' }}>{matchSummary(9, 18)}</span></div>}
                   <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>TOT</div>
                   <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{courseData.reduce((sum, h) => sum + h.par, 0)}</div>
                   {trackScore && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{calculateTotal(scores, 0, 18)}</div>}
                   {trackPutts && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{calculateTotal(putts, 0, 18)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}></div>}
+                  {trackGame && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}><span style={{ fontSize: '0.65rem' }}>{matchSummary(0, 18)}</span></div>}
                 </div>
               </div>
             </div>
@@ -1641,58 +1634,30 @@ export default function App() {
               </div>
             )}
 
-            {/* NIÐURSTAÐA LEIKS */}
-            {trackGame && matchPlayResult && (
-              <>
-                <div style={sectionHeadingStyle}>Niðurstaða leiks</div>
-                <div style={{ padding: '16px', background: 'transparent', border: `2px solid ${theme.scLine}`, borderRadius: theme.radius, marginBottom: '28px', textAlign: 'center', fontWeight: 'bold', fontSize: '1.1rem', color: theme.scText }}>
-                  {matchPlayResult}
-                </div>
-              </>
-            )}
-
-            {/* POKINN — opens as its own screen so it doesn't take scorecard space */}
-            <div style={sectionHeadingStyle}>Pokinn</div>
-            <button onClick={() => setShowBag(true)} style={{
-              ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box',
-              marginBottom: '28px'
-            }}>Opna pokann</button>
-
-            {/* AÐGERÐIR — archive / export / submit */}
-            <div style={sectionHeadingStyle}>Aðgerðir</div>
+            {/* Buttons live directly under the card — no section headings */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%', marginBottom: '28px' }}>
-              <button onClick={saveRound} style={{ ...actionBtnStyle, background: theme.darkGreen, color: '#fff', border: `2px solid ${theme.darkGreen}`, width: '100%', flex: 'none' }}>
-                Vista hring
+              <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
+                <button onClick={saveRound} style={{ ...actionBtnStyle, background: theme.darkGreen, color: '#fff', border: `2px solid ${theme.darkGreen}` }}>Vista hring</button>
+                <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
+              </div>
+              <button onClick={() => setShowRounds(true)} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
+                Mínir hringir
               </button>
               <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
-                <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
                 <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2' }}>Opna í PiP</button>
+                <button onClick={openGolfBox} style={actionBtnStyle}>Skrá í GolfBox</button>
               </div>
-              <button onClick={openGolfBox} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
-                Skrá skor í GolfBox
-              </button>
-              {/* Bulk export (>= MIN_EXPORT_HOLES scored holes per round, with AI readme) */}
-              <button onClick={exportAllData} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
-                Sækja öll gögn
-              </button>
             </div>
 
-            {/* MÍNIR HRINGIR — opens as its own screen, like Pokinn */}
-            <div style={sectionHeadingStyle}>Mínir hringir</div>
-            <button onClick={() => setShowRounds(true)} style={{
-              ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box',
-              marginBottom: '28px'
-            }}>Skoða hringi</button>
-
-            {/* Destructive clear — always last */}
-            <button onClick={clearRound} style={clearBtnStyle}>Þurrka út skorkort</button>
+            {/* Start a fresh round — destructive, always last */}
+            <button onClick={clearRound} style={clearBtnStyle}>Byrja nýjan hring</button>
           </div>
         </div>
       )}
 
-      {/* BAG SCREEN OVERLAY — sits above the scorecard */}
+      {/* BAG SCREEN OVERLAY — opened from settings, so it sits one layer above it */}
       {showBag && (
-        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 10000, display: 'flex', flexDirection: 'column', color: theme.scText }}>
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 10001, display: 'flex', flexDirection: 'column', color: theme.scText }}>
           <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
             <div />
             <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Pokinn</h2>
@@ -1858,6 +1823,12 @@ export default function App() {
               <SettingRow label="Skrá gögn sjálfur" checked={statSheet} onChange={setStatSheet} theme={theme} />
               <SettingRow label="Rekja skot" checked={trackShots} onChange={setTrackShots} theme={theme} />
             </div>
+
+            {/* The bag lives behind settings; its overlay sits above this screen */}
+            <button onClick={() => setShowBag(true)} style={{
+              ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box',
+              marginTop: '28px', marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
+            }}>Opna pokann</button>
           </div>
         </div>
       )}
