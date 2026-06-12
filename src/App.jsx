@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { courseData } from './courseData';
+import { courseData, courseMeta } from './courseData';
 import { greenData } from './greenData';
 import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
 import { MapContainer, Marker, useMapEvents, Polyline, Polygon, Circle, useMap, TileLayer } from 'react-leaflet';
@@ -591,6 +591,11 @@ export default function App() {
   const [rounds, setRounds] = useState(loadRounds);
   const [expandedRound, setExpandedRound] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  // Rounds ticked for the AI-prompt export (dates; not persisted).
+  const [selectedRounds, setSelectedRounds] = useState([]);
+  // Player handicap index — manual entry in Stillingar. GolfBox is another website,
+  // so the browser's same-origin policy stops us reading it from their page.
+  const [handicap, setHandicap] = useState(() => localStorage.getItem('myHandicap') || '');
   const [newClubName, setNewClubName] = useState('');
   const [newClubMax, setNewClubMax] = useState('');
 
@@ -678,11 +683,12 @@ export default function App() {
     localStorage.setItem('statSheet', JSON.stringify(statSheet));
     localStorage.setItem('mySheets', JSON.stringify(sheets));
     localStorage.setItem('statsView', JSON.stringify(statsView));
+    localStorage.setItem('myHandicap', handicap);
     localStorage.setItem('simpleView', JSON.stringify(simpleView));
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
     localStorage.setItem('myBag', JSON.stringify(bag));
     localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
-  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, statSheet, sheets, statsView, simpleView, darkMode, bag, showClubRec]);
+  }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, trackShots, statSheet, sheets, statsView, handicap, simpleView, darkMode, bag, showClubRec]);
 
   // Saved rounds live in their own NEW key; the live-round keys above stay as-is.
   useEffect(() => {
@@ -940,6 +946,57 @@ export default function App() {
       { exportedAt: new Date().toISOString(), readme: EXPORT_README, rounds: [r] },
       `Mosgolf_Gogn_${r.date.split('T')[0]}.json`
     );
+  };
+
+  // --- AI COACHING PROMPT ---
+  const toggleRoundSel = (date) =>
+    setSelectedRounds((prev) => prev.includes(date) ? prev.filter((d) => d !== date) : [...prev, date]);
+
+  const copyText = async (text) => {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch {
+      // Fallback for older WebViews: hidden textarea + execCommand.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+      } catch { return false; }
+    }
+  };
+
+  const buildAIPrompt = (sel) => {
+    const hcp = parseFloat(String(handicap).replace(',', '.'));
+    const hasHcp = Number.isFinite(hcp);
+    // WHS course handicap: index × slope/113 + (CR − par).
+    const courseHcp = hasHcp ? Math.round(hcp * courseMeta.slope / 113 + (courseMeta.cr - courseMeta.par)) : null;
+    const ranks = courseData.map((h) => `${h.hole}:${h.rank}`).join(' ');
+    return (
+      `You are a golf coaching simulator. The player is an amateur golfer` +
+      `${hasHcp ? ` with a handicap index of ${hcp}` : ' (handicap index unknown)'} playing their home course.\n\n` +
+      `Below are scores and self-reported stats from ${sel.length} round(s). Your job is to find how and where ` +
+      `the player can improve. Do not analyse the rounds hole by hole; instead:\n` +
+      `- Find where the good scores came from and look for a pattern in what went right.\n` +
+      `- Find the worst holes and look for a pattern in what went wrong (tee shots, bunkers, penalties, long first putts).\n` +
+      `- Compare results against each hole's stroke index (1 = hardest): where is the player losing strokes against expectation?\n` +
+      `- End with the 2-3 most impactful, concrete things to practise or change, based on the data.\n\n` +
+      `COURSE: ${courseMeta.name} (Mosfellsbaer, Iceland) - 18 holes, par ${courseMeta.par}, ` +
+      `course rating ${courseMeta.cr}, slope ${courseMeta.slope}.` +
+      `${hasHcp ? ` The player's course handicap here is about ${courseHcp}.` : ''}\n` +
+      `Stroke index by hole: ${ranks}\n\n` +
+      `DATA FORMAT: ${EXPORT_README}\n\n` +
+      `ROUNDS (JSON):\n${JSON.stringify(sel, null, 1)}`
+    );
+  };
+
+  const copyAIPrompt = async () => {
+    const sel = rounds.filter((r) => selectedRounds.includes(r.date));
+    if (!sel.length) { alert('Hakaðu við hringina sem á að greina.'); return; }
+    const ok = await copyText(buildAIPrompt(sel));
+    alert(ok ? 'AI prompt afritað á klemmuspjald.' : 'Tókst ekki að afrita.');
   };
 
   const doClearRound = () => {
@@ -1751,7 +1808,19 @@ export default function App() {
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
                         padding: '10px 12px', cursor: 'pointer'
                       }}>
-                        <span style={{ fontWeight: 'bold', fontSize: '0.85rem' }}>{fmtRoundDate(r.date)}</span>
+                        {/* Tick = include this round in the AI prompt */}
+                        <span
+                          onClick={(e) => { e.stopPropagation(); toggleRoundSel(r.date); }}
+                          title="Velja fyrir AI greiningu"
+                          style={{
+                            width: '20px', height: '20px', borderRadius: '4px', flex: 'none',
+                            border: `1px solid ${selectedRounds.includes(r.date) ? theme.scText : theme.scLine}`,
+                            backgroundColor: selectedRounds.includes(r.date) ? theme.scText : 'transparent',
+                            color: theme.scBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', boxSizing: 'border-box'
+                          }}
+                        >{selectedRounds.includes(r.date) ? '✓' : ''}</span>
+                        <span style={{ fontWeight: 'bold', fontSize: '0.85rem', flex: 1 }}>{fmtRoundDate(r.date)}</span>
                         <span className="num" style={{ fontSize: '1rem', fontWeight: 700 }}>
                           {s.total}<span style={{ fontSize: '0.75em', opacity: 0.7 }}> ({diffText})</span>
                         </span>
@@ -1785,13 +1854,13 @@ export default function App() {
               </div>
             )}
 
-            {/* Export — JSON bundled with the AI readme */}
+            {/* Export — AI prompt from the ticked rounds, or all data as JSON */}
             <div style={sectionHeadingStyle}>Sækja gögn</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)' }}>
               <button
-                onClick={() => { if (rounds.length) exportRound(rounds[0]); else alert('Engir vistaðir hringir.'); }}
-                style={{ ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box', opacity: rounds.length ? 1 : 0.5 }}
-              >Sækja síðasta hring</button>
+                onClick={copyAIPrompt}
+                style={{ ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box', opacity: selectedRounds.length ? 1 : 0.5 }}
+              >Sækja AI prompt{selectedRounds.length ? ` (${selectedRounds.length})` : ''}</button>
               <button
                 onClick={exportAllData}
                 style={{ ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box' }}
@@ -1822,6 +1891,22 @@ export default function App() {
               <SettingRow label="Kaddí" checked={showClubRec} onChange={setShowClubRec} theme={theme} />
               <SettingRow label="Skrá gögn sjálfur" checked={statSheet} onChange={setStatSheet} theme={theme} />
               <SettingRow label="Rekja skot" checked={trackShots} onChange={setTrackShots} theme={theme} />
+              {/* Handicap is typed in — GolfBox is cross-origin, unreadable from here */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
+                padding: '13px 12px', border: `1px solid ${theme.scLine}`, borderRadius: theme.radius
+              }}>
+                <span style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>Forgjöf</span>
+                <input
+                  type="text" inputMode="decimal" value={handicap}
+                  onChange={(e) => setHandicap(e.target.value)} placeholder="t.d. 23,4"
+                  style={{
+                    width: '90px', padding: '8px', borderRadius: theme.radius, border: `1px solid ${theme.scLine}`,
+                    background: 'transparent', color: theme.scText, fontSize: '1rem', textAlign: 'center',
+                    boxSizing: 'border-box', outline: 'none', fontFamily: theme.sans
+                  }}
+                />
+              </div>
             </div>
 
             {/* The bag lives behind settings; its overlay sits above this screen */}
