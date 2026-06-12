@@ -463,7 +463,8 @@ const EXPORT_README =
   'green: tee-shot result relative to the green on par 3 ("short"|"left"|"hit"|"right"|"long"), ' +
   'bunker: bunker shots taken (0|1|2 where 2 means 2 or more), penalty: penalty strokes (same scale), ' +
   'firstPutt: first-putt length in metres ("<1"|"1-3"|"3-10"|"10+") } — any field may be null (unanswered; partial data is normal). ' +
-  'marks = raw GPS points ({lat, lng, accuracy in metres, t = unix ms}) recorded by the player pressing a button right where each shot was played. ' +
+  'marks = raw GPS points ({lat, lng, accuracy in metres, t = unix ms}) recorded by the player pressing a button right where each shot was played; ' +
+  'a mark with manual: true (accuracy null) was placed by hand on the map afterwards (hazard, forgotten shot) — position is approximate, t is entry time, not shot time. ' +
   'shots = the same data made readable, one string per stroke in order: "<length>m[, fairway|bunker], <offset>, <distance>m to green" for a GPS-marked shot, ' +
   '"no info" for strokes the player did not mark, and "putt" for each recorded putt. Surface comes from traced course polygons (absent = unknown lie). ' +
   "<offset> is the sideways miss versus the intended line — tee shots are measured against the hole's ideal safe driving line (so dogleg holes are judged fairly), " +
@@ -488,6 +489,10 @@ const MIN_EXPORT_HOLES = 6;
 const isSheetComplete = (sheet, par) => !!sheet && typeof sheet === 'object' &&
   (par > 3 ? sheet.tee != null : sheet.green != null) &&
   sheet.bunker != null && sheet.penalty != null && sheet.firstPutt != null;
+
+// Snjallskrá completeness: every non-putt stroke has a mark.
+const allShotsMarked = (score, putts, mks) =>
+  score > 0 && score - putts > 0 && (mks || []).length === score - putts;
 
 // Out/in/total strokes, par diff over the holes actually played, total putts.
 const summarizeRound = (r) => {
@@ -1082,10 +1087,14 @@ export default function App() {
   const setStatSheetSafe = (v) => { setStatSheet(v); if (v) setSnjallskra(false); };
 
   // --- SHOT MARKS (Snjallskrá) handlers ---
-  const canMark = snjallskra && !isTeeView && !!gpsLocation;
+  // Live view records at the GPS fix. Tee view records at the tap marker —
+  // manual entry for hazards, forgotten shots and off-course testing.
+  const canMark = snjallskra && (isTeeView ? !!targetPoint : !!gpsLocation);
   const addMark = () => {
     if (!canMark) return;
-    const mk = { lat: gpsLocation.lat, lng: gpsLocation.lng, accuracy: gpsLocation.accuracy ?? null, t: Date.now() };
+    const mk = isTeeView
+      ? { lat: targetPoint.lat, lng: targetPoint.lng, accuracy: null, t: Date.now(), manual: true }
+      : { lat: gpsLocation.lat, lng: gpsLocation.lng, accuracy: gpsLocation.accuracy ?? null, t: Date.now() };
     // Length of this shot: from the previous mark, or the tee for the first one.
     const cur = marks[currentHoleIndex] || [];
     const from = cur.length ? cur[cur.length - 1] : currentHole.teeLocation;
@@ -1095,6 +1104,7 @@ export default function App() {
     setMarks((prev) => prev.map((m, i) => (i === currentHoleIndex ? [...m, mk] : m)));
     setMarkFlash(true);
     setTimeout(() => setMarkFlash(false), 350);
+    if (isTeeView) setTargetPoint(null); // consumed — ready to place the next one
   };
   const undoLastMark = () => {
     if (!(marks[currentHoleIndex] || []).length) return;
@@ -1410,8 +1420,12 @@ export default function App() {
         
         {trackPutts && (
           <div style={{ ...cellStyle }}>
-            {/* Small check when every sheet question for this hole is answered */}
-            {statSheet && !isExporting && isSheetComplete(sheets[index], holeData.par) && (
+            {/* Small check when the hole's data is complete: every sheet question
+                answered (Skrá gögn sjálfur) or every non-putt stroke marked (Snjallskrá) */}
+            {!isExporting && (
+              (statSheet && isSheetComplete(sheets[index], holeData.par)) ||
+              (snjallskra && allShotsMarked(scores[index] || 0, putts[index] || 0, marks[index]))
+            ) && (
               <span style={{ position: 'absolute', top: '1px', right: '3px', fontSize: '0.6rem', opacity: 0.7, zIndex: 3, pointerEvents: 'none' }}>✓</span>
             )}
             {isExporting ? (
