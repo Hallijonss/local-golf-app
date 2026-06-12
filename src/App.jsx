@@ -960,7 +960,7 @@ export default function App() {
         await videoRef.current.requestPictureInPicture();
         videoRef.current.addEventListener('leavepictureinpicture', () => clearInterval(intervalId), { once: true });
       }
-    } catch (err) {
+    } catch {
       alert("Gat ekki opnað PiP. Vafrinn þinn gæti lokað á það.");
     }
   };
