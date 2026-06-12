@@ -1100,10 +1100,6 @@ export default function App() {
     else if (window.confirm("Þurrka út allt?")) doClearRound();
   };
 
-  // Snjallskrá and Skrá gögn sjálfur are mutually exclusive (both may be off).
-  const setSnjallskraSafe = (v) => { setSnjallskra(v); if (v) setStatSheet(false); };
-  const setStatSheetSafe = (v) => { setStatSheet(v); if (v) setSnjallskra(false); };
-
   // --- SHOT MARKS (Snjallskrá) handlers ---
   // Live view records at the GPS fix. Tee view records at the tap marker —
   // manual entry for hazards, forgotten shots and off-course testing.
