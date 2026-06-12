@@ -213,10 +213,10 @@ const targetIcon = divIcon({
 
 // Boxless distance label centred on a point (green front/back + line midpoints).
 // Theme-independent: always white bold numerals with a dark halo for legibility
-// over the satellite imagery — no background/border.
-const createChip = (distance, size = 13) => divIcon({
+// over the satellite imagery — no background/border. faint = shot-trail labels.
+const createChip = (distance, size = 13, faint = false) => divIcon({
   className: '',
-  html: `<div style="display: inline-block; transform: translate(-50%, -50%); color: #fff; font-family: ${baseTheme.num}; font-size: ${size}px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 2px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9);">${distance}</div>`,
+  html: `<div style="display: inline-block; transform: translate(-50%, -50%); opacity: ${faint ? 0.7 : 1}; color: #fff; font-family: ${baseTheme.num}; font-size: ${size}px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 2px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9);">${distance}</div>`,
   iconSize: [0, 0], iconAnchor: [0, 0]
 });
 
@@ -228,6 +228,15 @@ const markDotIcon = divIcon({
       <circle cx="6" cy="6" r="4" fill="none" stroke="#ffffff" stroke-width="2" />
     </svg>`,
   iconSize: [12, 12], iconAnchor: [6, 6]
+});
+
+// Relief/drop position after a penalty — small white triangle (module scope).
+const dropMarkIcon = divIcon({
+  className: '',
+  html: `<svg width="14" height="13" viewBox="0 0 14 13" style="display:block; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6));">
+      <path d="M7 2 L12.5 11 L1.5 11 Z" fill="none" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" />
+    </svg>`,
+  iconSize: [14, 13], iconAnchor: [7, 7]
 });
 
 // Ray-cast point-in-polygon over a { lat, lng } ring.
@@ -424,9 +433,12 @@ const loadRound = (key, fill) => {
 //       green: 'short'|'left'|'hit'|'right'|'long'|null,//   par 3 "Á flöt?"
 //       bunker: 0|1|2|null, penalty: 0|1|2|null,        //   2 means "2+"
 //       firstPutt: '<1'|'1-3'|'3-10'|'10+'|null },      //   metres
-//     marks: [ { lat, lng, accuracy, t } ],             // stage 4: raw GPS shot marks
+//     marks: [ { lat, lng, accuracy, t,                 // stage 4: raw GPS shot marks
+//                manual?: true,                         //   placed by hand on the map
+//                drop?: true } ],                       //   relief point after a penalty
 //     shots: [ 'string per stroke' ],                   // stage 4: derived at save time
-//       — '<len>m[, fairway|bunker], <toGreen>m to green' for each marked shot,
+//       — '<len>m[, fairway|bunker], <offset>, <toGreen>m to green' per marked shot,
+//         a drop mark yields 'in penalty area / unplayable' + 'relief, ...',
 //         'no info' for unmarked strokes, 'putt' × putts. Nothing is guessed.
 //   } ],
 // }
@@ -464,8 +476,10 @@ const EXPORT_README =
   'bunker: bunker shots taken (0|1|2 where 2 means 2 or more), penalty: penalty strokes (same scale), ' +
   'firstPutt: first-putt length in metres ("<1"|"1-3"|"3-10"|"10+") } — any field may be null (unanswered; partial data is normal). ' +
   'marks = raw GPS points ({lat, lng, accuracy in metres, t = unix ms}) recorded by the player pressing a button right where each shot was played; ' +
-  'a mark with manual: true (accuracy null) was placed by hand on the map afterwards (hazard, forgotten shot) — position is approximate, t is entry time, not shot time. ' +
+  'a mark with manual: true (accuracy null) was placed by hand on the map afterwards (hazard, forgotten shot) — position is approximate, t is entry time, not shot time; ' +
+  'a mark with drop: true is the relief point after a penalty — the swing before it went into a penalty area or was unplayable, and the mark accounts for two strokes (swing + penalty). ' +
   'shots = the same data made readable, one string per stroke in order: "<length>m[, fairway|bunker], <offset>, <distance>m to green" for a GPS-marked shot, ' +
+  '"in penalty area / unplayable" followed by "relief, ..." for a penalty (the relief string carries the drop position data), ' +
   '"no info" for strokes the player did not mark, and "putt" for each recorded putt. Surface comes from traced course polygons (absent = unknown lie). ' +
   "<offset> is the sideways miss versus the intended line — tee shots are measured against the hole's ideal safe driving line (so dogleg holes are judged fairly), " +
   'later shots against the straight line to the green; "on line" means within 3 m. Nothing is derived beyond that — missing data stays missing.';
@@ -490,9 +504,12 @@ const isSheetComplete = (sheet, par) => !!sheet && typeof sheet === 'object' &&
   (par > 3 ? sheet.tee != null : sheet.green != null) &&
   sheet.bunker != null && sheet.penalty != null && sheet.firstPutt != null;
 
-// Snjallskrá completeness: every non-putt stroke has a mark.
-const allShotsMarked = (score, putts, mks) =>
-  score > 0 && score - putts > 0 && (mks || []).length === score - putts;
+// Snjallskrá completeness: every non-putt stroke accounted for. A drop mark
+// stands for two strokes (the swing into trouble + the penalty stroke).
+const allShotsMarked = (score, putts, mks) => {
+  const strokes = (mks || []).reduce((t, m) => t + (m && m.drop ? 2 : 1), 0);
+  return score > 0 && score - putts > 0 && strokes === score - putts;
+};
 
 // Out/in/total strokes, par diff over the holes actually played, total putts.
 const summarizeRound = (r) => {
@@ -617,9 +634,10 @@ export default function App() {
   const [snjallskra, setSnjallskra] = useState(() => loadJSON('snjallskra', false));
   // "Skrá gögn sjálfur" — post-hole stat sheet on/off.
   const [statSheet, setStatSheet] = useState(() => loadJSON('statSheet', false));
-  // Shot marks for the live round + brief button-press flash.
+  // Shot marks for the live round + brief button-press flashes.
   const [marks, setMarks] = useState(loadMarks);
   const [markFlash, setMarkFlash] = useState(false);
+  const [vitiFlash, setVitiFlash] = useState(false);
   // Length of the shot just recorded (metres) — shown briefly, then fades away.
   const [lastShotLen, setLastShotLen] = useState(null);
   const shotLenTimer = useRef(null);
@@ -1090,11 +1108,14 @@ export default function App() {
   // Live view records at the GPS fix. Tee view records at the tap marker —
   // manual entry for hazards, forgotten shots and off-course testing.
   const canMark = snjallskra && (isTeeView ? !!targetPoint : !!gpsLocation);
-  const addMark = () => {
+  // drop = Víti: this position is the relief point after a penalty (the previous
+  // swing went into a penalty area / was unplayable; counts as swing + penalty).
+  const addMark = (drop = false) => {
     if (!canMark) return;
     const mk = isTeeView
       ? { lat: targetPoint.lat, lng: targetPoint.lng, accuracy: null, t: Date.now(), manual: true }
       : { lat: gpsLocation.lat, lng: gpsLocation.lng, accuracy: gpsLocation.accuracy ?? null, t: Date.now() };
+    if (drop) mk.drop = true;
     // Length of this shot: from the previous mark, or the tee for the first one.
     const cur = marks[currentHoleIndex] || [];
     const from = cur.length ? cur[cur.length - 1] : currentHole.teeLocation;
@@ -1102,8 +1123,8 @@ export default function App() {
     clearTimeout(shotLenTimer.current);
     shotLenTimer.current = setTimeout(() => setLastShotLen(null), 2600);
     setMarks((prev) => prev.map((m, i) => (i === currentHoleIndex ? [...m, mk] : m)));
-    setMarkFlash(true);
-    setTimeout(() => setMarkFlash(false), 350);
+    (drop ? setVitiFlash : setMarkFlash)(true);
+    setTimeout(() => (drop ? setVitiFlash : setMarkFlash)(false), 350);
     if (isTeeView) setTargetPoint(null); // consumed — ready to place the next one
   };
   const undoLastMark = () => {
@@ -1144,7 +1165,14 @@ export default function App() {
       const surf = surfaceAt(m.lat, m.lng);
       const off = lateralOffset(prev, (k === 0 && aim) ? aim : green, m);
       const offTxt = Math.abs(off) < 3 ? 'on line' : `${Math.abs(off)}m ${off < 0 ? 'left' : 'right'} of line`;
-      shots.push(`${len}m${surf ? `, ${surf}` : ''}, ${offTxt}, ${toGreen}m to green`);
+      if (m.drop) {
+        // Two strokes: the swing that found trouble (resting spot unknown),
+        // then the penalty stroke, located at the relief point.
+        shots.push('in penalty area / unplayable');
+        shots.push(`relief, ${len}m${surf ? `, ${surf}` : ''}, ${offTxt}, ${toGreen}m to green`);
+      } else {
+        shots.push(`${len}m${surf ? `, ${surf}` : ''}, ${offTxt}, ${toGreen}m to green`);
+      }
       prev = m;
     });
     const score = scores[i] || 0, p = putts[i] || 0;
@@ -1340,6 +1368,19 @@ export default function App() {
   const greenBackChip = useMemo(() => (fbBack !== null ? createChip(fbBack) : null), [fbBack]);
   const toTargetChip = useMemo(() => (distanceUserToTarget !== null ? createChip(distanceUserToTarget, 18) : null), [distanceUserToTarget]);
   const targetToGreenChip = useMemo(() => (distanceTargetToGreen !== null ? createChip(distanceTargetToGreen, 18) : null), [distanceTargetToGreen]);
+  // Snjallskrá trail: one faint length chip per segment, memoised so marker DOM
+  // only churns when the marks change. Tiny segments (< 8 m) skip the label.
+  const trailChips = useMemo(() => {
+    if (!snjallskra) return [];
+    let prev = currentHole.teeLocation;
+    const chips = [];
+    for (const m of marks[currentHoleIndex] || []) {
+      const len = calculateDistanceInMeters(prev.lat, prev.lng, m.lat, m.lng);
+      if (len >= 8) chips.push({ key: m.t, pos: [(prev.lat + m.lat) / 2, (prev.lng + m.lng) / 2], icon: createChip(len, 12, true) });
+      prev = m;
+    }
+    return chips;
+  }, [snjallskra, marks, currentHoleIndex, currentHole]);
 
   if (activeLocation && currentHole.greenLocation) {
     initialBounds = [
@@ -1638,15 +1679,19 @@ export default function App() {
           {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
           {userLocation && targetPoint && <BrokenPolyline a={userLocation} b={targetPoint} meters={distanceUserToTarget} />}
           {targetPoint && <BrokenPolyline a={targetPoint} b={currentHole.greenLocation} meters={distanceTargetToGreen} />}
-          {/* Snjallskrá: dashed tee → shot → shot trail + a dot per recorded shot */}
+          {/* Snjallskrá: faint dashed tee → shot → shot trail, a dot per recorded
+              shot (triangle = relief/drop), faint length labels on the segments */}
           {snjallskra && (marks[currentHoleIndex] || []).length > 0 && (
             <>
               <Polyline
                 positions={[[currentHole.teeLocation.lat, currentHole.teeLocation.lng], ...marks[currentHoleIndex].map((m) => [m.lat, m.lng])]}
-                pathOptions={{ color: 'white', weight: 2, opacity: 0.85, dashArray: '4 6' }}
+                pathOptions={{ color: 'white', weight: 2, opacity: 0.6, dashArray: '4 6' }}
               />
               {marks[currentHoleIndex].map((m) => (
-                <Marker key={m.t} position={[m.lat, m.lng]} icon={markDotIcon} rotateWithView={false} />
+                <Marker key={m.t} position={[m.lat, m.lng]} icon={m.drop ? dropMarkIcon : markDotIcon} rotateWithView={false} />
+              ))}
+              {trailChips.map((c) => (
+                <Marker key={'c' + c.key} position={c.pos} icon={c.icon} rotateWithView={false} />
               ))}
             </>
           )}
@@ -1703,6 +1748,23 @@ export default function App() {
                 justifyContent: 'center', fontSize: '0.62rem', fontWeight: 700, padding: '0 4px', boxSizing: 'border-box'
               }}>{marks[currentHoleIndex].length}</span>
             )}
+          </div>
+        )}
+        {/* VÍTI — record the relief point after a penalty (same grey rules) */}
+        {snjallskra && (
+          <div
+            onClick={() => addMark(true)}
+            title="Víti — skrá vítastað"
+            style={{
+              ...cardStyle, padding: '11px 8px', borderRadius: theme.radius,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+              cursor: canMark ? 'pointer' : 'default', opacity: canMark ? 1 : 0.45,
+              background: vitiFlash ? theme.accent : theme.panel, transition: 'background 0.15s ease',
+              fontWeight: 700, fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.08em',
+              userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation'
+            }}
+          >
+            Víti
           </div>
         )}
       </div>
