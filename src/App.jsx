@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { courseData, courseMeta } from './courseData';
 import { greenData } from './greenData';
 import { featureData } from './featureData';
@@ -1127,10 +1127,52 @@ export default function App() {
   };
   // Loka (and tapping outside the box) marks the hole 'skipped' so it isn't asked
   // again; when re-editing an already saved sheet it closes without touching data.
-  const skipSheet = () => {
+  // Stable identity (useCallback) because the back-button effect depends on it.
+  const skipSheet = useCallback(() => {
     setSheets((prev) => prev.map((v, i) => (i === sheetHole && (v == null || v === 'skipped')) ? 'skipped' : v));
     setSheetHole(null);
-  };
+  }, [sheetHole]);
+
+  // --- ANDROID BACK BUTTON ---
+  // Keep ONE history entry alive while any overlay is open: hardware back then
+  // closes the topmost layer (re-arming the entry while layers remain) and only
+  // exits the app from a bare live view. X-button closes consume the entry.
+  const anyOverlay = showScorecard || showBag || showRounds || showSettings ||
+    showClearConfirm || showLoginModal || sheetHole !== null;
+  const hadOverlayRef = useRef(false);
+
+  // A reload while an overlay was open leaves a stale entry — drop it once.
+  useEffect(() => {
+    if (window.history.state && window.history.state.overlay) window.history.replaceState(null, '');
+  }, []);
+
+  useEffect(() => {
+    const h = window.history;
+    if (anyOverlay && !hadOverlayRef.current) {
+      if (!(h.state && h.state.overlay)) h.pushState({ overlay: true }, '');
+    } else if (!anyOverlay && hadOverlayRef.current) {
+      if (h.state && h.state.overlay) h.back();
+    }
+    hadOverlayRef.current = anyOverlay;
+  }, [anyOverlay]);
+
+  useEffect(() => {
+    const onPop = () => {
+      // Top of the visual stack first (modals > sheet > bag > pages > scorecard).
+      const layersOpen = [showClearConfirm, showLoginModal, sheetHole !== null, showBag, showRounds, showSettings, showScorecard].filter(Boolean).length;
+      if (showClearConfirm) setShowClearConfirm(false);
+      else if (showLoginModal) setShowLoginModal(false);
+      else if (sheetHole !== null) skipSheet();
+      else if (showBag) setShowBag(false);
+      else if (showRounds) setShowRounds(false);
+      else if (showSettings) setShowSettings(false);
+      else if (showScorecard) setShowScorecard(false);
+      else return; // nothing open: a real back navigation, let it through
+      if (layersOpen > 1) window.history.pushState({ overlay: true }, '');
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [showClearConfirm, showLoginModal, sheetHole, showBag, showRounds, showSettings, showScorecard, skipSheet]);
 
   const adjustClubMax = (id, delta) =>
     setBag((prev) => prev.map((c) => c.id === id ? { ...c, max: Math.min(350, Math.max(20, c.max + delta)) } : c));
