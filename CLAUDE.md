@@ -8,8 +8,8 @@ obvious values.
 ## Commands
 - `npm run dev` — vite dev server (preview launch.json runs it on port 5199)
 - `npm run build` — must pass clean before every commit
-- `npm run lint` — baseline is **53 pre-existing errors** (react/prop-types
-  blanket + unused `err` in startPiP). A task must add NOTHING new.
+- `npm run lint` — baseline is **ZERO problems** (react/prop-types is disabled
+  in eslint.config.js by design). A task must keep it at zero.
 - `npm run bake:greens` — scripts/greens.geojson → src/greenData.js
 - `npm run bake:features` — scripts/fariways.geojson (sic, typo'd filename) +
   sand.geojson + aims.geojson → src/featureData.js
@@ -21,17 +21,31 @@ obvious values.
   runtime dependencies; no new network calls (weather is the only one).
 - Android is the target; iOS quirks out of scope.
 - Leaflet divIcons live at module scope or in useMemo — NEVER inline in JSX.
-- Finish every task: build clean, lint baseline-clean, verify in the preview
-  browser when observable, plain-language file-by-file summary, short commit.
+- Finish every task: build clean, lint clean, plain-language file-by-file
+  summary, short commit.
+- Preview testing is at YOUR DISCRETION (user-approved): verify in the preview
+  browser for behavior changes, new UI, or anything risky; skip it for trivial
+  changes (labels, numbers, comments) where a clean build is proof enough.
 - GolfBox form-post and PiP code are fragile by nature — don't refactor unasked.
 - If a request is ambiguous or could break on-course use, ask before coding.
 
-## Architecture
-- Deliberately one big src/App.jsx (~1950 lines): design tokens (makeTheme),
-  map helper components, module-scope helpers, then the App component holding
-  ALL state. A split into containers is planned (see git history / ask user).
+## Architecture (split into modules 2026-06-13)
+- src/App.jsx (~650 lines) — THE STATE HOLDER: all persistent state, every
+  handler that mutates it, the persistence/wind/GPS/back-button effects, the
+  global modals (GolfBox login, save-before-clear) and screen composition.
+  State changes propagate down via props; screens call back up.
+- src/MapScreen.jsx — map + camera solver + HUD + Snjallskrá buttons/trail +
+  scoring footer + stat sheet. Owns map-internal mechanics only (centerTrigger,
+  auto-frame refs, measured insets). Framing knobs RAIL_SKEW_PX etc. live here.
+- src/ScorecardScreen.jsx — the 18-hole table + action buttons.
+- src/Screens.jsx — BagScreen, RoundsScreen, SettingsScreen + SettingRow.
+- src/theme.js — baseTheme, makeTheme(dark), microLabel, cardStyleFor,
+  screenStyles (shared screen shell/button styles).
+- src/icons.js — all Leaflet divIcons + createChip.
+- src/utils.js — ALL stateless logic: geometry, storage loaders (loadJSON etc.),
+  round schema comment + loadRounds, club rec, plays-like, deriveShots,
+  EXPORT_README, downloadJSON, copyText, buildAIPrompt.
 - Styling = inline style objects from makeTheme(dark). No CSS frameworks.
-- src/utils.js — getElevation (bilinear over baked DEM), distance, bearing.
 - Data files: courseData.js (HAND-maintained: tees/greens/pars/rank stroke
   index + courseMeta par 71 / CR 68.3 / slope 124), greenData.js +
   elevationData.js + featureData.js (ALL AUTO-GENERATED — never hand-edit,
@@ -53,7 +67,7 @@ obvious values.
   tap marker (tee view, manual:true); Víti records a drop (drop:true = swing
   into trouble + penalty = 2 strokes); long-press Skrá högg = undo last mark;
   faint dashed trail + faint length chips per segment.
-- Rounds: ONE schema (comment block in App.jsx, schemaVersion 1). Saved to
+- Rounds: ONE schema (comment block in utils.js, schemaVersion 1). Saved to
   'myRounds' (cap 50, newest first). shots[] strings derived at save time —
   NEVER guess missing data ("no info" / "putt" / "in penalty area" / "relief").
 - Exports: JSON download + AI coaching prompt (clipboard) both embed
@@ -72,7 +86,8 @@ destructively. All reads via loadJSON with shape validation.
 
 ## Git / deploy
 - Work on **main** only. gh-pages = built dist pushed by `npm run deploy`
-  (auto-generated, never touch). ui-redesign is an old fully-merged branch.
+  (auto-generated, never touch). ui-redesign was an old fully-merged branch,
+  deleted 2026-06-13.
 - No service worker. Phones get updates via normal HTTP cache (~10 min on
   GitHub Pages). Clearing "cached images and files" is safe; clearing "site
   data/cookies" would erase rounds — warn the user.
