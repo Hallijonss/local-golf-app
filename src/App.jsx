@@ -1,617 +1,20 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { courseData, courseMeta } from './courseData';
-import { greenData } from './greenData';
-import { featureData } from './featureData';
-import { calculateDistanceInMeters, calculateBearing, getElevation } from './utils';
-import { MapContainer, Marker, useMapEvents, Polyline, Polygon, Circle, useMap, TileLayer } from 'react-leaflet';
-import { divIcon } from 'leaflet';
-import { Navigation, Flag, Crosshair, X, Settings, ClipboardList } from 'lucide-react';
-
-import 'leaflet/dist/leaflet.css';
-import 'leaflet-rotate';
+// App = the state holder. ALL persistent state, the handlers that mutate it,
+// the persistence/wind/GPS/back-button effects and the global modals live here;
+// the screens (MapScreen, ScorecardScreen, Bag/Rounds/SettingsScreen) are
+// presentation that calls back up via props.
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { courseData } from './courseData';
+import { makeTheme } from './theme';
+import {
+  calculateDistanceInMeters, loadJSON, loadRound, loadRounds, loadSheets, loadMarks,
+  loadBag, freshBag, deriveShots, summarizeRound, ROUNDS_KEY, MAX_ROUNDS,
+  MIN_EXPORT_HOLES, EXPORT_README, downloadJSON, copyText, buildAIPrompt,
+} from './utils';
+import MapScreen from './MapScreen';
+import ScorecardScreen from './ScorecardScreen';
+import { BagScreen, RoundsScreen, SettingsScreen } from './Screens';
 import easterEggImg from './assets/easter-egg.png';
 
-// Draws the traced green polygons so trace accuracy can be checked on the phone.
-// Verification only — flip to false for the final product. The polygon DATA is
-// still used for front/back calculations regardless of this flag.
-const SHOW_GREEN_OUTLINES = false;
-
-// --- DESIGN TOKENS ---
-const baseTheme = {
-  darkGreen: '#0a4d2a',
-  softWhite: 'rgba(255, 255, 255, 0.95)',
-  frostedWhite: 'rgba(255, 255, 255, 0.85)',
-  glassBorder: '1px solid rgba(9, 82, 40, 0.15)',
-  shadow: '0 4px 12px rgba(0,0,0,0.15)',
-  radius: '4px',
-  ink: '#0a4d2a',
-  panelShadow: '0 2px 14px rgba(0,0,0,0.28)',
-  sans: "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif",
-  num: "'Barlow Condensed', 'Barlow', 'Helvetica Neue', sans-serif",
-};
-
-// Mode-dependent tokens merged over the base. The whole HUD + scorecard read
-// from these, so flipping `dark` re-themes everything (sc* = scorecard screen).
-const makeTheme = (dark) => ({
-  ...baseTheme,
-  ...(dark ? {
-    panel: 'rgba(9, 26, 21, 0.68)', panelText: '#eef3ea', hairLight: 'rgba(255,255,255,0.22)', accent: '#f0d28c',
-    scBg: '#0f211a', scText: '#e7efe6', scLine: 'rgba(255,255,255,0.20)', scHead: '#0b1813', scCell: '#12251c', scAccent: '#17392b', scShape: '#e7efe6',
-    chip: { bg: 'rgba(10,26,20,0.94)', fg: '#ffffff', border: 'rgba(255,255,255,0.55)' },
-  } : {
-    panel: 'rgba(255,255,255,0.93)', panelText: '#16241d', hairLight: 'rgba(10,40,28,0.18)', accent: '#9a6f1e',
-    scBg: '#f5f8f5', scText: '#0a4d2a', scLine: 'rgba(10,77,42,0.65)', scHead: '#eef3f0', scCell: '#ffffff', scAccent: '#dff0e4', scShape: '#0a4d2a',
-    chip: { bg: 'rgba(255,255,255,0.97)', fg: '#16241d', border: 'rgba(10,40,28,0.5)' },
-  }),
-});
-
-const microLabel = {
-  fontSize: '0.52rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase',
-  opacity: 0.62, fontFamily: baseTheme.sans,
-};
-
-// Move a lat/lng `dist` metres along a compass `bearingDeg` (geodesic).
-const offsetLatLng = (lat, lng, bearingDeg, dist) => {
-  const R = 6378137;
-  const d = dist / R, t = bearingDeg * Math.PI / 180;
-  const p1 = lat * Math.PI / 180, l1 = lng * Math.PI / 180;
-  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(t));
-  const l2 = l1 + Math.atan2(Math.sin(t) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
-  return { lat: p2 * 180 / Math.PI, lng: l2 * 180 / Math.PI };
-};
-
-// --- FRAMING TUNING KNOBS (tweak by number; no code knowledge needed) ---
-const RAIL_SKEW_PX = 44;     // how far the hole slides left (px). Smaller = more centered.
-const FRAME_TOP_PX = 6;      // extra gap between the top pills and the back of green (px).
-const FRAME_BOTTOM_PX = 4;   // extra gap between the player/tee and the bottom UI (px).
-
-// --- MAP HELPER COMPONENTS ---
-function MapCameraTracker({ startLoc, greenLoc, polygon, centerTrigger, currentHoleIndex, isTeeView, topInsetPx, bottomInsetPx }) {
-  const map = useMap();
-  // Latest geometry via refs so the camera only re-solves on the trigger deps
-  // below (recenter / hole / view / inset / resize), never on every GPS tick.
-  const startRef = useRef(startLoc); startRef.current = startLoc;
-  const greenRef = useRef(greenLoc); greenRef.current = greenLoc;
-  const polyRef = useRef(polygon); polyRef.current = polygon;
-
-  useEffect(() => {
-    const updateView = () => {
-      const start = startRef.current, green = greenRef.current, poly = polyRef.current;
-      if (!start || !green) return;
-      const mapSize = map.getSize();
-      if (mapSize.y === 0) return;
-
-      const playBearing = calculateBearing(start.lat, start.lng, green.lat, green.lng);
-      // Local metre projection around the green; unit vector along the play line.
-      const mx = 111320 * Math.cos(green.lat * Math.PI / 180), my = 110540;
-      const toXY = (p) => ({ x: (p.lng - green.lng) * mx, y: (p.lat - green.lat) * my });
-      const S = toXY(start);
-      const dlen = Math.hypot(S.x, S.y) || 1;
-      const ux = -S.x / dlen, uy = -S.y / dlen; // points start -> green
-
-      // Back edge of the green: the polygon vertex farthest along the play line.
-      let backPoint, spanMeters;
-      if (poly && poly.length) {
-        let maxProj = -Infinity, bx = 0, by = 0;
-        for (const p of poly) {
-          const q = toXY(p);
-          const proj = (q.x - S.x) * ux + (q.y - S.y) * uy;
-          if (proj > maxProj) { maxProj = proj; bx = q.x; by = q.y; }
-        }
-        spanMeters = maxProj;
-        backPoint = { lat: green.lat + by / my, lng: green.lng + bx / mx };
-      } else {
-        backPoint = offsetLatLng(green.lat, green.lng, playBearing, 12);
-        const bq = toXY(backPoint);
-        spanMeters = (bq.x - S.x) * ux + (bq.y - S.y) * uy;
-      }
-      if (!(spanMeters > 0)) return;
-
-      const usablePx = Math.max(50, mapSize.y - topInsetPx - bottomInsetPx);
-      const mpp = spanMeters / usablePx;
-      const centerLatRad = green.lat * Math.PI / 180;
-      let zoom = Math.log2((156543.03392 * Math.cos(centerLatRad)) / mpp);
-      zoom = Math.max(5, Math.min(21, zoom));
-
-      // Screen centre lies on the play line, fraction f from backPoint -> start,
-      // so the back edge lands at topInsetPx and the player/tee at the bottom inset.
-      const f = (mapSize.y / 2 - topInsetPx) / usablePx;
-      const center = {
-        lat: backPoint.lat + f * (start.lat - backPoint.lat),
-        lng: backPoint.lng + f * (start.lng - backPoint.lng),
-      };
-      const c = offsetLatLng(center.lat, center.lng, playBearing + 90, RAIL_SKEW_PX * mpp);
-      map.setView([c.lat, c.lng], zoom, { animate: false });
-    };
-
-    updateView();
-    // Re-solve on container resize (replaces the old 500ms invalidateSize hack).
-    const ro = new ResizeObserver(() => { map.invalidateSize(); updateView(); });
-    ro.observe(map.getContainer());
-    return () => ro.disconnect();
-  }, [map, centerTrigger, currentHoleIndex, isTeeView, topInsetPx, bottomInsetPx]);
-
-  return null;
-}
-
-// A white play-line segment with a gap around its midpoint so a distance label
-// sits in a clean break. Falls back to a single line for very short segments.
-function BrokenPolyline({ a, b, meters }) {
-  if (!a || !b) return null;
-  const opts = { color: 'white', weight: 2 };
-  const gap = Math.min(30, Math.max(12, (meters || 0) * 0.20));
-  const hf = meters > 0 ? (gap / 2) / meters : 0;
-  if (hf >= 0.45) return <Polyline positions={[[a.lat, a.lng], [b.lat, b.lng]]} pathOptions={opts} />;
-  const lerp = (t) => [a.lat + (b.lat - a.lat) * t, a.lng + (b.lng - a.lng) * t];
-  return (
-    <>
-      <Polyline positions={[[a.lat, a.lng], lerp(0.5 - hf)]} pathOptions={opts} />
-      <Polyline positions={[lerp(0.5 + hf), [b.lat, b.lng]]} pathOptions={opts} />
-    </>
-  );
-}
-
-function MapRotationManager({ bearing, centerTrigger, currentHoleIndex, isTeeView }) {
-  const map = useMap();
-  // Rotation should only update on recenter / hole / view changes, not on every
-  // bearing tick — so read the latest bearing from a ref instead of depending on it.
-  const bearingRef = useRef(bearing);
-  bearingRef.current = bearing;
-  useEffect(() => {
-    if (typeof map.setBearing === 'function') map.setBearing(bearingRef.current);
-  }, [map, centerTrigger, currentHoleIndex, isTeeView]);
-  return null;
-}
-
-function MapEvents({ setTargetPoint }) {
-  const map = useMapEvents({
-    click(e) {
-      setTargetPoint((prev) => {
-        // Tapping (roughly) the same spot again clears the waypoint.
-        if (prev) {
-          const a = map.latLngToContainerPoint(e.latlng);
-          const b = map.latLngToContainerPoint([prev.lat, prev.lng]);
-          if (a.distanceTo(b) < 25) return null;
-        }
-        return { lat: e.latlng.lat, lng: e.latlng.lng };
-      });
-    },
-    dblclick() { setTargetPoint(null); }
-  });
-  return null;
-}
-
-// --- ICONS ---
-// Pin-accurate flag: a small hollow white ring whose CENTRE sits exactly on
-// greenLocation; the stick and rectangular flag rise upward only.
-const greenIcon = divIcon({
-  className: '',
-  html: `<svg width="20" height="28" viewBox="0 0 20 28" style="display:block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.55));">
-      <line x1="10" y1="23" x2="10" y2="4" stroke="#ffffff" stroke-width="2" stroke-linecap="round" />
-      <rect x="10" y="4" width="9" height="6" fill="${baseTheme.ink}" stroke="#ffffff" stroke-width="1" stroke-linejoin="round" />
-      <circle cx="10" cy="23" r="3" fill="none" stroke="#ffffff" stroke-width="2" />
-    </svg>`,
-  iconSize: [20, 28], iconAnchor: [10, 23]
-});
-
-const userIcon = divIcon({
-  className: '', 
-  html: `<div style="background-color: #4A90E2; width: 14px; height: 14px; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>`,
-  iconSize: [18, 18], iconAnchor: [9, 9]
-});
-
-// Aiming marker: a hollow white ring with a small white centre dot (distances
-// live on the line midpoints as chips). Drop-shadow keeps it readable on imagery.
-const targetIcon = divIcon({
-  className: '',
-  html: `<svg width="20" height="20" viewBox="0 0 20 20" style="display:block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));">
-      <circle cx="10" cy="10" r="7" fill="none" stroke="#ffffff" stroke-width="2" />
-      <circle cx="10" cy="10" r="2" fill="#ffffff" />
-    </svg>`,
-  iconSize: [20, 20], iconAnchor: [10, 10]
-});
-
-// Boxless distance label centred on a point (green front/back + line midpoints).
-// Theme-independent: always white bold numerals with a dark halo for legibility
-// over the satellite imagery — no background/border. faint = shot-trail labels.
-const createChip = (distance, size = 13, faint = false) => divIcon({
-  className: '',
-  html: `<div style="display: inline-block; transform: translate(-50%, -50%); opacity: ${faint ? 0.7 : 1}; color: #fff; font-family: ${baseTheme.num}; font-size: ${size}px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 2px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9);">${distance}</div>`,
-  iconSize: [0, 0], iconAnchor: [0, 0]
-});
-
-// --- SHOT MARKS (Snjallskrá) ---
-// Small white dot for a recorded shot position (module scope — never inline).
-const markDotIcon = divIcon({
-  className: '',
-  html: `<svg width="12" height="12" viewBox="0 0 12 12" style="display:block; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6));">
-      <circle cx="6" cy="6" r="4" fill="none" stroke="#ffffff" stroke-width="2" />
-    </svg>`,
-  iconSize: [12, 12], iconAnchor: [6, 6]
-});
-
-// Relief/drop position after a penalty — small white triangle (module scope).
-const dropMarkIcon = divIcon({
-  className: '',
-  html: `<svg width="14" height="13" viewBox="0 0 14 13" style="display:block; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6));">
-      <path d="M7 2 L12.5 11 L1.5 11 Z" fill="none" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" />
-    </svg>`,
-  iconSize: [14, 13], iconAnchor: [7, 7]
-});
-
-// Ray-cast point-in-polygon over a { lat, lng } ring.
-const pointInPolygon = (lat, lng, poly) => {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i], b = poly[j];
-    if ((a.lat > lat) !== (b.lat > lat) && lng < (b.lng - a.lng) * (lat - a.lat) / (b.lat - a.lat) + a.lng) {
-      inside = !inside;
-    }
-  }
-  return inside;
-};
-
-// What a marked shot position landed in: bunkers win over fairways (a bunker
-// can sit inside a fairway outline); anything else is unknown — never guessed.
-const surfaceAt = (lat, lng) => {
-  for (const b of featureData.bunkers) if (pointInPolygon(lat, lng, b)) return 'bunker';
-  for (const f of featureData.fairways) if (pointInPolygon(lat, lng, f)) return 'fairway';
-  return null;
-};
-
-// Signed sideways offset (metres) of point M from the line A→B as seen from A:
-// negative = left of the line, positive = right.
-const lateralOffset = (A, B, M) => {
-  const mx = 111320 * Math.cos(A.lat * Math.PI / 180), my = 110540;
-  const bx = (B.lng - A.lng) * mx, by = (B.lat - A.lat) * my;
-  const px = (M.lng - A.lng) * mx, py = (M.lat - A.lat) * my;
-  const len = Math.hypot(bx, by) || 1;
-  // 2D cross product: positive when M lies left of A→B (x east, y north) — flip.
-  return Math.round(-(bx * py - by * px) / len);
-};
-
-// Working shot marks for the live round (NEW key 'myMarks'): 18 × arrays of
-// { lat, lng, accuracy, t }. Survives reloads like the live scores do.
-const loadMarks = () => {
-  const v = loadJSON('myMarks', null);
-  if (!Array.isArray(v) || v.length !== 18) return Array(18).fill().map(() => []);
-  return v.map((m) => Array.isArray(m)
-    ? m.filter((p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lng))
-    : []);
-};
-
-// --- FRONT/BACK OF GREEN ---
-// Beyond this distance the green is too far to bother showing front/back.
-const MAX_FB_DISTANCE = 300;
-// Where the play line (from `from` through `green`) crosses the green polygon:
-// front = nearest crossing, back = farthest. Returns the crossing points (lat/lng)
-// and the unrounded distances from `from`. Falls back to nearest/farthest polygon
-// vertex when the ray gives fewer than two crossings (e.g. measured from inside).
-const frontBackOnLine = (from, green, polygon) => {
-  if (!from || !green || !polygon || polygon.length < 2) return null;
-  const mx = 111320 * Math.cos(green.lat * Math.PI / 180), my = 110540;
-  const toXY = (p) => ({ x: (p.lng - green.lng) * mx, y: (p.lat - green.lat) * my });
-  const toLL = (x, y) => ({ lat: green.lat + y / my, lng: green.lng + x / mx });
-
-  const F = toXY(from);
-  const rx = -F.x, ry = -F.y; // ray direction: from `from` toward the green centre (origin)
-  const hits = [];
-  const n = polygon.length;
-  for (let i = 0; i < n; i++) {
-    const A = toXY(polygon[i]);
-    const B = toXY(polygon[(i + 1) % n]); // wrap to close the ring
-    const ex = B.x - A.x, ey = B.y - A.y;
-    const denom = rx * ey - ry * ex;
-    if (denom === 0) continue;
-    const afx = A.x - F.x, afy = A.y - F.y;
-    const t = (afx * ey - afy * ex) / denom; // ray param (>0 ahead of `from`)
-    const s = (afx * ry - afy * rx) / denom; // edge param (0..1 on the edge)
-    if (t > 1e-9 && s >= 0 && s <= 1) {
-      const px = F.x + t * rx, py = F.y + t * ry;
-      hits.push({ t, dist: Math.hypot(px - F.x, py - F.y), pt: toLL(px, py) });
-    }
-  }
-  if (hits.length >= 2) {
-    hits.sort((a, b) => a.t - b.t);
-    const f = hits[0], b = hits[hits.length - 1];
-    return { frontPt: f.pt, backPt: b.pt, front: f.dist, back: b.dist };
-  }
-
-  // Fallback: nearest / farthest polygon vertex from `from`.
-  let frontPt = null, backPt = null, front = Infinity, back = -Infinity;
-  for (const p of polygon) {
-    const d = calculateDistanceInMeters(from.lat, from.lng, p.lat, p.lng);
-    if (d < front) { front = d; frontPt = p; }
-    if (d > back) { back = d; backPt = p; }
-  }
-  if (!frontPt) return null;
-  return { frontPt, backPt, front, back };
-};
-
-// --- SCORECARD HELPER COMPONENTS ---
-const getScoreStyles = (score, par, col) => {
-  if (!score || score === 0) return { shape: null, textColor: col };
-  const diff = score - par;
-  if (diff <= -2) return { shape: 'double-circle', textColor: col };
-  if (diff === -1) return { shape: 'circle', textColor: col };
-  if (diff === 0) return { shape: null, textColor: col };
-  if (diff === 1) return { shape: 'square', textColor: col };
-  if (diff === 2) return { shape: 'double-square', textColor: col };
-  return { shape: 'red-square', textColor: '#fff' };
-};
-
-const renderScoreShape = (shape, col) => {
-  const base = { width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' };
-  if (shape === 'circle') return <div style={{ ...base, border: `1.5px solid ${col}`, borderRadius: '50%' }} />;
-  if (shape === 'double-circle') return (
-    <div style={{ ...base, border: `1.5px solid ${col}`, borderRadius: '50%', padding: '2px', boxSizing: 'border-box' }}>
-      <div style={{ width: '100%', height: '100%', border: `1px solid ${col}`, borderRadius: '50%' }} />
-    </div>
-  );
-  if (shape === 'square') return <div style={{ ...base, border: `1.5px solid ${col}` }} />;
-  if (shape === 'double-square') return (
-    <div style={{ ...base, border: `1.5px solid ${col}`, padding: '2px', boxSizing: 'border-box' }}>
-      <div style={{ width: '100%', height: '100%', border: `1px solid ${col}` }} />
-    </div>
-  );
-  if (shape === 'red-square') return <div style={{ ...base, backgroundColor: '#d32f2f' }} />;
-  return null;
-};
-
-// One row on the settings screen: descriptive label + on/off switch.
-const SettingRow = ({ label, checked, onChange, theme }) => (
-  <div
-    onClick={() => onChange(!checked)}
-    style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
-      padding: '13px 12px', border: `1px solid ${theme.scLine}`, borderRadius: theme.radius,
-      cursor: 'pointer'
-    }}
-  >
-    <span style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{label}</span>
-    <div style={{
-      width: '42px', height: '24px', borderRadius: '12px', position: 'relative', flex: 'none',
-      backgroundColor: checked ? theme.scText : 'transparent',
-      border: `1px solid ${checked ? theme.scText : theme.scLine}`,
-      boxSizing: 'border-box', transition: 'background-color 0.15s ease'
-    }}>
-      <div style={{
-        position: 'absolute', top: '3px', left: checked ? '23px' : '3px',
-        width: '16px', height: '16px', borderRadius: '50%',
-        backgroundColor: checked ? theme.scBg : theme.scText, transition: 'left 0.15s ease'
-      }} />
-    </div>
-  </div>
-);
-
-const MatchToggleBtn = ({ label, value, selected, onClick, theme }) => (
-  <div
-    onClick={() => onClick(value)}
-    style={{
-      padding: '7px 4px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
-      borderRadius: theme.radius, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 700,
-      backgroundColor: selected ? theme.panelText : 'transparent',
-      color: selected ? theme.scBg : theme.panelText,
-      border: `1px solid ${selected ? theme.panelText : theme.hairLight}`,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      flex: 1, textAlign: 'center', boxSizing: 'border-box',
-      transition: 'all 0.15s ease', textTransform: 'uppercase', letterSpacing: '0.08em'
-    }}
-  >
-    {label}
-  </div>
-);
-
-// Safe localStorage read: parses JSON, returns fallback on missing/invalid.
-const loadJSON = (key, fallback) => {
-  try {
-    const v = JSON.parse(localStorage.getItem(key));
-    return v ?? fallback;
-  } catch {
-    return fallback;
-  }
-};
-// A valid 18-length round array, else the given empty round.
-const loadRound = (key, fill) => {
-  const v = loadJSON(key, null);
-  return (Array.isArray(v) && v.length === 18) ? v : Array(18).fill(fill);
-};
-
-// --- SAVED ROUNDS ('myRounds') ---
-// ONE round-object schema (schemaVersion 1) — every later feature reads/writes this:
-// {
-//   schemaVersion: 1,
-//   date: ISO string (set at save time),
-//   course: 'Mosgolf',
-//   weather: { speed, fromDeg, gust, tempC } | null,   // wind snapshot at save time
-//   holes: [ 18 × {
-//     hole: 1..18, par,                                 // from courseData
-//     score, putts,                                     // numbers, 0 = not entered
-//     match: '' | 'A' | 'B' | 'H',
-//     sheet: null | 'skipped' | {                       // stage 2: post-hole stats
-//       tee: 'left'|'hit'|'right'|'whiff'|null,         //   par 4/5 tee shot
-//       green: 'short'|'left'|'hit'|'right'|'long'|null,//   par 3 "Á flöt?"
-//       bunker: 0|1|2|null, penalty: 0|1|2|null,        //   2 means "2+"
-//       firstPutt: '<1'|'1-3'|'3-10'|'10+'|null },      //   metres
-//     marks: [ { lat, lng, accuracy, t,                 // stage 4: raw GPS shot marks
-//                manual?: true,                         //   placed by hand on the map
-//                drop?: true } ],                       //   relief point after a penalty
-//     shots: [ 'string per stroke' ],                   // stage 4: derived at save time
-//       — '<len>m[, fairway|bunker], <offset>, <toGreen>m to green' per marked shot,
-//         a drop mark yields 'in penalty area / unplayable' + 'relief, ...',
-//         'no info' for unmarked strokes, 'putt' × putts. Nothing is guessed.
-//   } ],
-// }
-// Stored newest-first in the NEW localStorage key 'myRounds' (live round keys
-// myScores/myPutts/myMatch stay untouched), capped at MAX_ROUNDS.
-const ROUNDS_KEY = 'myRounds';
-const MAX_ROUNDS = 50;
-const loadRounds = () => {
-  const v = loadJSON(ROUNDS_KEY, null);
-  if (!Array.isArray(v)) return [];
-  return v
-    .filter((r) => r && typeof r === 'object' && typeof r.date === 'string' && Array.isArray(r.holes) && r.holes.length === 18)
-    .slice(0, MAX_ROUNDS);
-};
-// Working stat sheets for the live round (NEW key 'mySheets'): 18 × the round
-// schema's hole.sheet value (null | 'skipped' | object). Survives app restarts
-// mid-round like the live scores do.
-const loadSheets = () => {
-  const v = loadJSON('mySheets', null);
-  return (Array.isArray(v) && v.length === 18) ? v : Array(18).fill(null);
-};
-
-// --- EXPORT ---
-// English schema notes embedded in every export so the file is self-describing
-// (an AI analyzing it needs no other context).
-const EXPORT_README =
-  'Golf rounds from Mosgolf (Mosfellsbaer, Iceland), exported from a personal GPS app. ' +
-  'rounds[] items: { schemaVersion, date (ISO string, when the round was saved), course, ' +
-  'weather (conditions snapshot at save time or null: speed = wind m/s, fromDeg = compass direction the wind blows FROM, gust = m/s, tempC = air temp Celsius), ' +
-  'holes[18] }. Each hole: { hole (1-18), par, score (strokes, 0 = not entered), putts (0 = not entered), ' +
-  'match (match-play result: "" = not logged, "A" = player Halli won the hole, "B" = the opponents won, "H" = halved), sheet, marks }. ' +
-  'sheet = self-reported post-hole stats: null (never filled), the string "skipped" (player chose to skip), or an object ' +
-  '{ tee: tee-shot result on par 4/5 ("left"|"hit"|"right"|"whiff" = missed swing), ' +
-  'green: tee-shot result relative to the green on par 3 ("short"|"left"|"hit"|"right"|"long"), ' +
-  'bunker: bunker shots taken (0|1|2 where 2 means 2 or more), penalty: penalty strokes (same scale), ' +
-  'firstPutt: first-putt length in metres ("<1"|"1-3"|"3-10"|"10+") } — any field may be null (unanswered; partial data is normal). ' +
-  'marks = raw GPS points ({lat, lng, accuracy in metres, t = unix ms}) recorded by the player pressing a button right where each shot was played; ' +
-  'a mark with manual: true (accuracy null) was placed by hand on the map afterwards (hazard, forgotten shot) — position is approximate, t is entry time, not shot time; ' +
-  'a mark with drop: true is the relief point after a penalty — the swing before it went into a penalty area or was unplayable, and the mark accounts for two strokes (swing + penalty). ' +
-  'shots = the same data made readable, one string per stroke in order: "<length>m[, fairway|bunker], <offset>, <distance>m to green" for a GPS-marked shot, ' +
-  '"in penalty area / unplayable" followed by "relief, ..." for a penalty (the relief string carries the drop position data), ' +
-  '"no info" for strokes the player did not mark, and "putt" for each recorded putt. Surface comes from traced course polygons (absent = unknown lie). ' +
-  "<offset> is the sideways miss versus the intended line — tee shots are measured against the hole's ideal safe driving line (so dogleg holes are judged fairly), " +
-  'later shots against the straight line to the green; "on line" means within 3 m. Nothing is derived beyond that — missing data stays missing.';
-
-// Download an object as pretty-printed JSON via a temporary Blob link (no deps).
-const downloadJSON = (obj, filename) => {
-  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-};
-
-// Rounds with fewer scored holes than this are left out of the bulk export —
-// they're abandoned cards, not data.
-const MIN_EXPORT_HOLES = 6;
-
-// Every applicable sheet question answered? (tee on par 4/5, green on par 3.)
-const isSheetComplete = (sheet, par) => !!sheet && typeof sheet === 'object' &&
-  (par > 3 ? sheet.tee != null : sheet.green != null) &&
-  sheet.bunker != null && sheet.penalty != null && sheet.firstPutt != null;
-
-// Snjallskrá completeness: every non-putt stroke accounted for. A drop mark
-// stands for two strokes (the swing into trouble + the penalty stroke).
-const allShotsMarked = (score, putts, mks) => {
-  const strokes = (mks || []).reduce((t, m) => t + (m && m.drop ? 2 : 1), 0);
-  return score > 0 && score - putts > 0 && strokes === score - putts;
-};
-
-// Out/in/total strokes, par diff over the holes actually played, total putts.
-const summarizeRound = (r) => {
-  let out = 0, inn = 0, parPlayed = 0, holesPlayed = 0, puttsTotal = 0;
-  r.holes.forEach((h, i) => {
-    const s = h.score || 0;
-    if (i < 9) out += s; else inn += s;
-    if (s > 0) { parPlayed += h.par; holesPlayed += 1; }
-    puttsTotal += h.putts || 0;
-  });
-  const total = out + inn;
-  return { out, inn, total, diff: total - parPlayed, holesPlayed, puttsTotal };
-};
-// Manual day.month.year — locale data for is-IS isn't guaranteed on every device.
-const fmtRoundDate = (iso) => {
-  const d = new Date(iso);
-  return isNaN(d) ? '' : `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear()}`;
-};
-
-// --- BAG / CLUB RECOMMENDATION ---
-// max = full-swing carry in metres.
-const DEFAULT_BAG = [
-  { id: 'dr', label: 'Dræver', max: 300 },
-  { id: '3w', label: '3-tré', max: 200 },
-  { id: 'i4', label: '4-járn', max: 160 },
-  { id: 'i5', label: '5-járn', max: 150 },
-  { id: 'i6', label: '6-járn', max: 140 },
-  { id: 'i7', label: '7-járn', max: 130 },
-  { id: 'i8', label: '8-járn', max: 125 },
-  { id: 'i9', label: '9-járn', max: 115 },
-  { id: 'pw', label: 'PW', max: 110 },
-  { id: 'w56', label: '56°', max: 95 },
-];
-const freshBag = () => DEFAULT_BAG.map((c) => ({ ...c, enabled: true }));
-const loadBag = () => {
-  const v = loadJSON('myBag', null);
-  if (Array.isArray(v) && v.length && v.every((c) => c && typeof c.id === 'string' && typeof c.label === 'string' && typeof c.max === 'number')) {
-    return v.map((c) => ({ id: c.id, label: c.label, max: c.max, enabled: c.enabled !== false }));
-  }
-  return freshBag();
-};
-
-// How many metres past a club's max still counts as a full swing when the
-// front edge of the green is reachable (ball lands on the green, just short).
-const FULL_SWING_OVER_M = 3;
-// Off the tee the driver never gets recommended ("no driver off the deck").
-const DRIVER_ID = 'dr';
-
-// Recommend a club for a plays-like target distance (metres). Always the
-// smallest enabled club that covers the shot — no early step-up. A club just
-// short of the target (<= FULL_SWING_OVER_M) still counts as a full swing if
-// its max carries the front edge of the green (frontDist, plays-like metres).
-// Anything beyond the longest club gets that club at full swing (the driver
-// covers every shot past the next-longest club). Returns { label, pct } where
-// pct is null for a full swing (>=95%).
-const recommendClub = (target, bag, { frontDist = null, onTee = true } = {}) => {
-  if (target == null || !(target > 0)) return null;
-  const enabled = bag
-    .filter((c) => c.enabled && (onTee || c.id !== DRIVER_ID))
-    .slice().sort((a, b) => a.max - b.max);
-  if (enabled.length === 0) return null;
-  for (const c of enabled) {
-    if (c.max >= target) {
-      const pct = Math.round((target / c.max) * 100 / 5) * 5;
-      return { label: c.label, pct: pct < 95 ? pct : null };
-    }
-    if (target - c.max <= FULL_SWING_OVER_M && frontDist !== null && c.max >= frontDist) {
-      return { label: c.label, pct: null };
-    }
-  }
-  return { label: enabled[enabled.length - 1].label, pct: null };
-};
-
-// "Plays like" model (returns adjusted metres, or null when out of range / no dist):
-//  • SLOPE: rise / tan(descent angle); descentDeg = max(36, 52 - 0.06·dist) so short
-//    shots (steep landing) care less about elevation, long shots more.
-//  • WIND: along-shot component only (crosswind cancels via cosine). Headwind
-//    lengthens ~1.5%/(m·s⁻¹), mildly superlinear; tailwind shortens ~0.75%/(m·s⁻¹).
-//  • TEMPERATURE (air density): cold air plays longer, ~0.12%/°C. The baseline is
-//    a typical Icelandic golf day (BASELINE_TEMP_C) — the bag's club distances are
-//    calibrated in local conditions, so only deviations from the local norm count.
-// Each term is independently optional (no NaN when wind/temp/elevation is missing).
-const BASELINE_TEMP_C = 8;
-const playsLikeFor = (distM, elevDiff, w, relAngleDeg) => {
-  if (distM === null || distM > MAX_FB_DISTANCE) return null;
-  let adj = 0;
-  if (elevDiff !== null) {
-    const descentDeg = Math.max(36, 52 - 0.06 * distM);
-    adj += elevDiff / Math.tan(descentDeg * Math.PI / 180);
-  }
-  if (w && relAngleDeg !== null) {
-    const tail = w.speed * Math.cos(relAngleDeg * Math.PI / 180); // + tailwind, - headwind
-    adj += tail >= 0 ? -distM * tail * 0.0075 : -distM * tail * (0.015 + 0.0004 * w.speed);
-  }
-  if (w && w.tempC != null) {
-    const t = Math.max(-15, Math.min(30, w.tempC));
-    adj += distM * (BASELINE_TEMP_C - t) * 0.0012;
-  }
-  return Math.round(distM + adj);
-};
-
-// --- MAIN APP ---
 export default function App() {
   const [currentHoleIndex, setCurrentHoleIndex] = useState(() => {
     const saved = localStorage.getItem('currentHoleIndex');
@@ -622,7 +25,7 @@ export default function App() {
   const [scores, setScores] = useState(() => loadRound('myScores', 0));
   const [putts, setPutts] = useState(() => loadRound('myPutts', 0));
   const [matchPlay, setMatchPlay] = useState(() => loadRound('myMatch', ''));
-  
+
   const [gbUser, setGbUser] = useState(() => localStorage.getItem('gbUser') || '');
   const [gbPass, setGbPass] = useState(() => localStorage.getItem('gbPass') || '');
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -630,7 +33,7 @@ export default function App() {
   const [trackScore, setTrackScore] = useState(() => loadJSON('trackScore', true));
   const [trackPutts, setTrackPutts] = useState(() => loadJSON('trackPutts', false));
   const [trackGame, setTrackGame] = useState(() => loadJSON('trackGame', false));
-  // "Snjallskrá" — GPS shot-mark mode (replaces the old "Rekja skot" placeholder).
+  // "Snjallskrá" — GPS shot-mark mode.
   const [snjallskra, setSnjallskra] = useState(() => loadJSON('snjallskra', false));
   // "Skrá gögn sjálfur" — post-hole stat sheet on/off.
   const [statSheet, setStatSheet] = useState(() => loadJSON('statSheet', false));
@@ -659,7 +62,7 @@ export default function App() {
   const [showRounds, setShowRounds] = useState(false);
 
   // Saved rounds archive ('myRounds') + which round is expanded in Mínir hringir,
-  // and the save-before-clear question for Þurrka út skorkort.
+  // and the save-before-clear question for Byrja nýjan hring.
   const [rounds, setRounds] = useState(loadRounds);
   const [expandedRound, setExpandedRound] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -674,10 +77,6 @@ export default function App() {
   // Dark / light theme for the whole app (HUD + scorecard). Defaults to dark.
   const [darkMode, setDarkMode] = useState(() => loadJSON('darkMode', true));
   const theme = useMemo(() => makeTheme(darkMode), [darkMode]);
-  const cardStyle = useMemo(() => ({
-    background: theme.panel, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
-    border: `1px solid ${theme.hairLight}`, boxShadow: theme.panelShadow, color: theme.panelText,
-  }), [theme]);
 
   const [hideEasterEgg, setHideEasterEgg] = useState(false);
 
@@ -688,10 +87,6 @@ export default function App() {
   const [showScorecard, setShowScorecard] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  const [centerTrigger, setCenterTrigger] = useState(0);
-  // Auto-frame bookkeeping — refs (not state) so GPS ticks don't re-render or reset timers.
-  const autoCenter = useRef({ done: false, firstFixAt: 0, timer: null });
-
   // --- WIND STATE (Open-Meteo, free/keyless; the only feature needing network) ---
   // { speed: m/s, fromDeg: meteorological direction the wind blows FROM } or null.
   const [wind, setWind] = useState(null);
@@ -700,28 +95,7 @@ export default function App() {
   const videoRef = useRef(null);
   const loginFormRef = useRef(null);
 
-  // Cached club recommendation (anti-flicker; see below).
-  const recRef = useRef({ target: null, rec: null, bag: null, onTee: null });
-
-  // Measured UI insets (px) so the camera frames exactly above/below the chrome.
-  const topPillRef = useRef(null);
-  const footerRef = useRef(null);
-  const navRef = useRef(null);
-  const [insets, setInsets] = useState({ top: 64, bottom: 56 });
-
   const currentHole = courseData[currentHoleIndex] || courseData[0];
-
-  // --- ELEVATION ---
-  // greenElevation - originElevation (origin = tee in tee view, player in live
-  // view). Positive = uphill. Pure local DEM math, so deriving it is cheap.
-  const elevationDiff = useMemo(() => {
-    const origin = isTeeView ? currentHole.teeLocation : gpsLocation;
-    if (!origin) return null;
-    const originElev = getElevation(origin.lat, origin.lng);
-    const greenElev = getElevation(currentHole.greenLocation.lat, currentHole.greenLocation.lng);
-    return (originElev !== null && greenElev !== null) ? greenElev - originElev : null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTeeView, currentHoleIndex, gpsLocation]);
 
   // --- WIND FETCH ---
   // One request for the course (wind is ~uniform over 1.5km); refresh every 10 min.
@@ -762,7 +136,7 @@ export default function App() {
     localStorage.setItem('showClubRec', JSON.stringify(showClubRec));
   }, [currentHoleIndex, scores, putts, matchPlay, trackScore, trackPutts, trackGame, snjallskra, statSheet, sheets, marks, handicap, simpleView, darkMode, bag, showClubRec]);
 
-  // Saved rounds live in their own NEW key; the live-round keys above stay as-is.
+  // Saved rounds live in their own key; the live-round keys above stay as-is.
   useEffect(() => {
     localStorage.setItem(ROUNDS_KEY, JSON.stringify(rounds));
   }, [rounds]);
@@ -774,20 +148,7 @@ export default function App() {
     m.content = darkMode ? '#0b1813' : '#0a4d2a';
   }, [darkMode]);
 
-  // Match status over a hole range for the LEIKUR summary cells (ÚT/INN/TOT):
-  // "Halli +n" / "Hinir +n" / "Jafnt", or '' while nothing is logged in the range.
-  const matchSummary = (start, end) => {
-    let a = 0, b = 0, logged = 0;
-    for (let i = start; i < end; i++) {
-      if (matchPlay[i] === 'A') a++;
-      else if (matchPlay[i] === 'B') b++;
-      if (matchPlay[i]) logged++;
-    }
-    if (!logged) return '';
-    const d = a - b;
-    return d > 0 ? `Halli +${d}` : d < 0 ? `Hinir +${-d}` : 'Jafnt';
-  };
-
+  // --- GPS WATCH (live view only) ---
   useEffect(() => {
     if (isTeeView) return;
     setGpsError(false);
@@ -815,38 +176,8 @@ export default function App() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, [isTeeView]);
 
-  // Reset auto-frame bookkeeping when the hole or view changes.
-  useEffect(() => {
-    const ac = autoCenter.current;
-    ac.done = false;
-    ac.firstFixAt = 0;
-    if (ac.timer) { clearTimeout(ac.timer); ac.timer = null; }
-  }, [currentHoleIndex, isTeeView]);
-
-  // Auto-frame the hole once per hole/view: as soon as an accepted fix is
-  // accurate (<=30 m), or 6 s after the first fix if it never gets that good.
-  useEffect(() => {
-    if (isTeeView || !gpsLocation) return;
-    const ac = autoCenter.current;
-    if (ac.done) return;
-    const center = () => {
-      if (ac.done) return;
-      ac.done = true;
-      if (ac.timer) { clearTimeout(ac.timer); ac.timer = null; }
-      setCenterTrigger(c => c + 1);
-    };
-    if (ac.firstFixAt === 0) {
-      ac.firstFixAt = Date.now();
-      ac.timer = setTimeout(center, 6000); // fallback; set ONCE (not reset by later fixes)
-    }
-    if (gpsLocation.accuracy != null && gpsLocation.accuracy <= 30) center();
-  }, [gpsLocation, isTeeView, currentHoleIndex]);
-
-  // Clear any pending auto-frame / shot-length timers on unmount.
-  useEffect(() => () => {
-    if (autoCenter.current.timer) clearTimeout(autoCenter.current.timer);
-    clearTimeout(shotLenTimer.current);
-  }, []);
+  // Clear any pending shot-length timer on unmount.
+  useEffect(() => () => { clearTimeout(shotLenTimer.current); }, []);
 
   useEffect(() => { setTargetPoint(null); }, [currentHoleIndex]);
 
@@ -864,6 +195,7 @@ export default function App() {
     }
   }, [currentHoleIndex, statSheet, scores, sheets]);
 
+  // --- SCORE / PUTT / MATCH handlers ---
   const adjustScore = (amount) => {
     const newScores = [...scores];
     const currentVal = newScores[currentHoleIndex] || 0;
@@ -904,6 +236,7 @@ export default function App() {
     setMatchPlay(newMatch);
   };
 
+  // --- IMAGE EXPORT / PIP / GOLFBOX (fragile by nature — don't refactor) ---
   const saveScorecardImage = async () => {
     setIsExporting(true);
     setTimeout(async () => {
@@ -931,7 +264,7 @@ export default function App() {
   const startPiP = async () => {
     try {
       const canvas = document.createElement('canvas');
-      canvas.width = 800; canvas.height = 450; 
+      canvas.width = 800; canvas.height = 450;
       const ctx = canvas.getContext('2d');
       const drawCanvas = () => {
         ctx.fillStyle = '#111111';
@@ -944,8 +277,8 @@ export default function App() {
           ctx.beginPath(); ctx.moveTo(x, y + 30); ctx.lineTo(x + cellW, y + 30); ctx.stroke();
           ctx.fillStyle = '#AAAAAA'; ctx.font = '16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
           ctx.fillText(i + 1, x + cellW / 2, y + 15);
-          const scoreVal = scores[i], scoreText = (scoreVal && scoreVal !== 0) ? scoreVal : ''; 
-          ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 80px sans-serif'; 
+          const scoreVal = scores[i], scoreText = (scoreVal && scoreVal !== 0) ? scoreVal : '';
+          ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 80px sans-serif';
           ctx.fillText(scoreText, x + cellW / 2, y + 30 + (cellH - 30) / 2);
         }
         ctx.fillStyle = Date.now() % 1000 < 500 ? theme.darkGreen : '#111111';
@@ -978,7 +311,8 @@ export default function App() {
     }
   };
 
-  // Build a round object (schema above) from the live round + weather snapshot.
+  // --- SAVED ROUNDS ---
+  // Build a round object (schema in utils.js) from the live round + weather snapshot.
   const buildRound = () => ({
     schemaVersion: 1,
     date: new Date().toISOString(),
@@ -987,7 +321,7 @@ export default function App() {
     holes: courseData.map((h, i) => ({
       hole: h.hole, par: h.par,
       score: scores[i] || 0, putts: putts[i] || 0, match: matchPlay[i] || '',
-      sheet: sheets[i] || null, marks: marks[i] || [], shots: deriveShots(i),
+      sheet: sheets[i] || null, marks: marks[i] || [], shots: deriveShots(i, marks, scores, putts),
     })),
   });
   // Built outside the setState updater so StrictMode's double-invoke stays pure.
@@ -1027,62 +361,14 @@ export default function App() {
   const toggleRoundSel = (date) =>
     setSelectedRounds((prev) => prev.includes(date) ? prev.filter((d) => d !== date) : [...prev, date]);
 
-  const copyText = async (text) => {
-    try { await navigator.clipboard.writeText(text); return true; }
-    catch {
-      // Fallback for older WebViews: hidden textarea + execCommand.
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand('copy');
-        ta.remove();
-        return ok;
-      } catch { return false; }
-    }
-  };
-
-  const buildAIPrompt = (sel) => {
-    const hcp = parseFloat(String(handicap).replace(',', '.'));
-    const hasHcp = Number.isFinite(hcp);
-    // WHS course handicap: index × slope/113 + (CR − par).
-    const courseHcp = hasHcp ? Math.round(hcp * courseMeta.slope / 113 + (courseMeta.cr - courseMeta.par)) : null;
-    const ranks = courseData.map((h) => `${h.hole}:${h.rank}`).join(' ');
-    // Hole shapes from the baked aim points: dogleg direction + severity.
-    const shapes = courseData.map((h, i) => {
-      const a = featureData.aims[i];
-      if (!a) return `${h.hole}:straight (par 3)`;
-      const mag = Math.abs(a.dogleg);
-      const lbl = mag < 10 ? 'straight' : `${mag >= 30 ? 'hard' : 'slight'} ${a.dogleg > 0 ? 'right' : 'left'} (${mag}°)`;
-      return `${h.hole}:${lbl}`;
-    }).join(', ');
-    return (
-      `You are a golf coaching simulator. The player is an amateur golfer` +
-      `${hasHcp ? ` with a handicap index of ${hcp}` : ' (handicap index unknown)'} playing their home course.\n\n` +
-      `Below are scores and self-reported stats from ${sel.length} round(s). Your job is to find how and where ` +
-      `the player can improve. Do not analyse the rounds hole by hole; instead:\n` +
-      `- Find where the good scores came from and look for a pattern in what went right.\n` +
-      `- Find the worst holes and look for a pattern in what went wrong (tee shots, bunkers, penalties, long first putts).\n` +
-      `- Compare results against each hole's stroke index (1 = hardest): where is the player losing strokes against expectation?\n` +
-      `- End with the 2-3 most impactful, concrete things to practise or change, based on the data.\n\n` +
-      `COURSE: ${courseMeta.name} (Mosfellsbaer, Iceland) - 18 holes, par ${courseMeta.par}, ` +
-      `course rating ${courseMeta.cr}, slope ${courseMeta.slope}.` +
-      `${hasHcp ? ` The player's course handicap here is about ${courseHcp}.` : ''}\n` +
-      `Stroke index by hole: ${ranks}\n` +
-      `Hole shapes (dogleg from the ideal driving line): ${shapes}\n\n` +
-      `DATA FORMAT: ${EXPORT_README}\n\n` +
-      `ROUNDS (JSON):\n${JSON.stringify(sel, null, 1)}`
-    );
-  };
-
   const copyAIPrompt = async () => {
     const sel = rounds.filter((r) => selectedRounds.includes(r.date));
     if (!sel.length) { alert('Hakaðu við hringina sem á að greina.'); return; }
-    const ok = await copyText(buildAIPrompt(sel));
+    const ok = await copyText(buildAIPrompt(sel, handicap));
     alert(ok ? 'AI prompt afritað á klemmuspjald.' : 'Tókst ekki að afrita.');
   };
 
+  // --- CLEAR ROUND ---
   const doClearRound = () => {
     setScores(Array(18).fill(0));
     setPutts(Array(18).fill(0));
@@ -1099,6 +385,7 @@ export default function App() {
     if (scores.some((s) => s > 0)) setShowClearConfirm(true);
     else if (window.confirm("Þurrka út allt?")) doClearRound();
   };
+
   // --- SHOT MARKS (Snjallskrá) handlers ---
   // Live view records at the GPS fix. Tee view records at the tap marker —
   // manual entry for hazards, forgotten shots and off-course testing.
@@ -1142,42 +429,6 @@ export default function App() {
     if (markPress.current.timer) { clearTimeout(markPress.current.timer); markPress.current.timer = null; }
   };
   const markClick = () => { if (!markPress.current.fired) addMark(); };
-
-  // One readable string per stroke, in order: marked shots (length, surface from
-  // the traced polygons, sideways miss vs the intended line, distance to green
-  // centre), then unmarked strokes as 'no info', then recorded putts. The tee
-  // shot is measured against the hole's ideal driving line (aim point) when one
-  // exists; every other shot against the straight line to the green. Nothing is
-  // guessed (see EXPORT_README).
-  const deriveShots = (i) => {
-    const green = courseData[i].greenLocation;
-    const aim = featureData.aims[i];
-    const shots = [];
-    let prev = courseData[i].teeLocation;
-    (marks[i] || []).forEach((m, k) => {
-      const len = calculateDistanceInMeters(prev.lat, prev.lng, m.lat, m.lng);
-      const toGreen = calculateDistanceInMeters(m.lat, m.lng, green.lat, green.lng);
-      const surf = surfaceAt(m.lat, m.lng);
-      const off = lateralOffset(prev, (k === 0 && aim) ? aim : green, m);
-      const offTxt = Math.abs(off) < 3 ? 'on line' : `${Math.abs(off)}m ${off < 0 ? 'left' : 'right'} of line`;
-      if (m.drop) {
-        // Two strokes: the swing that found trouble (resting spot unknown),
-        // then the penalty stroke, located at the relief point.
-        shots.push('in penalty area / unplayable');
-        shots.push(`relief, ${len}m${surf ? `, ${surf}` : ''}, ${offTxt}, ${toGreen}m to green`);
-      } else {
-        shots.push(`${len}m${surf ? `, ${surf}` : ''}, ${offTxt}, ${toGreen}m to green`);
-      }
-      prev = m;
-    });
-    const score = scores[i] || 0, p = putts[i] || 0;
-    if (score > 0) {
-      const unknown = Math.max(0, score - shots.length - p);
-      for (let k = 0; k < unknown; k++) shots.push('no info');
-      for (let k = 0; k < Math.min(p, score); k++) shots.push('putt');
-    }
-    return shots;
-  };
 
   // --- STAT SHEET handlers ---
   const openSheet = (i) => {
@@ -1246,6 +497,7 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, [showClearConfirm, showLoginModal, sheetHole, showBag, showRounds, showSettings, showScorecard, skipSheet]);
 
+  // --- BAG handlers ---
   const adjustClubMax = (id, delta) =>
     setBag((prev) => prev.map((c) => c.id === id ? { ...c, max: Math.min(350, Math.max(20, c.max + delta)) } : c));
   const toggleClub = (id) =>
@@ -1269,314 +521,6 @@ export default function App() {
     setNewClubMax('');
   };
 
-  const userLocation = isTeeView ? currentHole.teeLocation : gpsLocation;
-  const activeLocation = userLocation || currentHole.teeLocation; 
-  let distanceUserToGreen = null, distanceUserToTarget = null, distanceTargetToGreen = null, mapBearing = 0, initialBounds = null;
-
-  if (userLocation) distanceUserToGreen = calculateDistanceInMeters(userLocation.lat, userLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
-  if (userLocation && targetPoint) distanceUserToTarget = calculateDistanceInMeters(userLocation.lat, userLocation.lng, targetPoint.lat, targetPoint.lng);
-  if (targetPoint) distanceTargetToGreen = calculateDistanceInMeters(targetPoint.lat, targetPoint.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
-  if (activeLocation) mapBearing = -calculateBearing(activeLocation.lat, activeLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
-
-  // Current hole's traced green (polygon + aim point).
-  const greenInfo = greenData[currentHoleIndex] || null;
-  const holePolygon = greenInfo ? greenInfo.polygon : null;
-  // Front/back chips sit where the play line crosses the green edge, measured
-  // from the aimed-at waypoint if one is placed, otherwise the player/tee.
-  // Complex view only, <=300m.
-  const fbFrom = targetPoint || userLocation;
-  const fbDist = targetPoint ? distanceTargetToGreen : distanceUserToGreen;
-  const greenFB = (!simpleView && fbFrom && fbDist !== null && fbDist <= MAX_FB_DISTANCE)
-    ? frontBackOnLine(fbFrom, currentHole.greenLocation, holePolygon) : null;
-
-  // Wind direction relative to the line of play: 0° = tailwind (blows toward green),
-  // 180° = headwind. Used to rotate the wind arrow in the play-up map frame.
-  let windRelAngle = null;
-  if (wind && activeLocation) {
-    const holeBearing = calculateBearing(activeLocation.lat, activeLocation.lng, currentHole.greenLocation.lat, currentHole.greenLocation.lng);
-    windRelAngle = ((wind.fromDeg + 180 - holeBearing) % 360 + 360) % 360;
-  }
-
-  // Elevation + wind share one pill (complex view only).
-  const elevRounded = elevationDiff !== null ? Math.round(elevationDiff) : null;
-  const showWind = !simpleView && wind && windRelAngle !== null;
-  const showElev = !simpleView && elevRounded !== null;
-  const gustShown = showWind && wind.gust != null && (wind.gust - wind.speed) >= 4;
-  // Wind+gust+slope together overflow the 104px rail → stack them in two rows.
-  const stackWindElev = gustShown && showElev;
-
-  // "Plays like" to the green (player/tee → green). Model lives in playsLikeFor.
-  const playsLike = playsLikeFor(distanceUserToGreen, elevationDiff, wind, windRelAngle);
-
-  // Plays-like for the player→target leg when a tap target is placed (same model,
-  // its own elevation/wind/temperature).
-  let targetPlaysLike = null;
-  if (targetPoint && userLocation && distanceUserToTarget !== null) {
-    const oElev = getElevation(userLocation.lat, userLocation.lng);
-    const tElev = getElevation(targetPoint.lat, targetPoint.lng);
-    const tElevDiff = (oElev !== null && tElev !== null) ? tElev - oElev : null;
-    const tBearing = calculateBearing(userLocation.lat, userLocation.lng, targetPoint.lat, targetPoint.lng);
-    const tWindRel = wind ? ((wind.fromDeg + 180 - tBearing) % 360 + 360) % 360 : null;
-    targetPlaysLike = playsLikeFor(distanceUserToTarget, tElevDiff, wind, tWindRel);
-  }
-
-  // The big rail number follows the shot in front of you: player→marker when a
-  // point is tapped, otherwise player→green. Same for its Spilast line.
-  const railDist = (targetPoint && distanceUserToTarget !== null) ? distanceUserToTarget : distanceUserToGreen;
-  const railPlaysLike = (targetPoint && distanceUserToTarget !== null) ? targetPlaysLike : playsLike;
-  const showPlaysLike = !simpleView && railPlaysLike !== null;
-
-  // Club recommendation keys on the shot in front of you: the target leg if a tap
-  // target is placed, otherwise the green. Cached in a ref; only re-evaluated when
-  // the target distance moves >= 2 m (or the bag / tee status changes) so it
-  // doesn't flicker.
-  // Beyond the plays-like range (300 m) fall back to the raw distance — the
-  // exact adjustment doesn't matter out there, but the driver still should show.
-  const recTarget = targetPoint
-    ? (targetPlaysLike ?? distanceUserToTarget)
-    : (playsLike ?? distanceUserToGreen);
-  // Driver only counts while you're effectively on the teebox (<= 10 m from it).
-  const onTee = isTeeView || (gpsLocation
-    ? calculateDistanceInMeters(gpsLocation.lat, gpsLocation.lng, currentHole.teeLocation.lat, currentHole.teeLocation.lng) <= 10
-    : false);
-  // Front edge in plays-like metres (same adjustment as the centre distance);
-  // only meaningful when the shot is at the green, not a tapped waypoint.
-  const recFront = (!targetPoint && greenFB && playsLike !== null && distanceUserToGreen !== null)
-    ? greenFB.front + (playsLike - distanceUserToGreen) : null;
-  let recommendation = null;
-  if (recTarget != null) {
-    const r = recRef.current;
-    if (r.target == null || r.bag !== bag || r.onTee !== onTee || Math.abs(recTarget - r.target) >= 2) {
-      recommendation = recommendClub(recTarget, bag, { frontDist: recFront, onTee });
-      recRef.current = { target: recTarget, rec: recommendation, bag, onTee };
-    } else {
-      recommendation = r.rec;
-    }
-  }
-  const showClubLine = showClubRec && !simpleView && recommendation;
-
-  // Memoised label divIcons — rebuilt only when their displayed number changes,
-  // so standing still doesn't churn marker DOM. (Labels are theme-independent.)
-  const fbFront = greenFB ? Math.round(greenFB.front) : null;
-  const fbBack = greenFB ? Math.round(greenFB.back) : null;
-  const greenFrontChip = useMemo(() => (fbFront !== null ? createChip(fbFront) : null), [fbFront]);
-  const greenBackChip = useMemo(() => (fbBack !== null ? createChip(fbBack) : null), [fbBack]);
-  const toTargetChip = useMemo(() => (distanceUserToTarget !== null ? createChip(distanceUserToTarget, 18) : null), [distanceUserToTarget]);
-  const targetToGreenChip = useMemo(() => (distanceTargetToGreen !== null ? createChip(distanceTargetToGreen, 18) : null), [distanceTargetToGreen]);
-  // Snjallskrá trail: one faint length chip per segment, memoised so marker DOM
-  // only churns when the marks change. Tiny segments (< 8 m) skip the label.
-  const trailChips = useMemo(() => {
-    if (!snjallskra) return [];
-    let prev = currentHole.teeLocation;
-    const chips = [];
-    for (const m of marks[currentHoleIndex] || []) {
-      const len = calculateDistanceInMeters(prev.lat, prev.lng, m.lat, m.lng);
-      if (len >= 8) chips.push({ key: m.t, pos: [(prev.lat + m.lat) / 2, (prev.lng + m.lng) / 2], icon: createChip(len, 12, true) });
-      prev = m;
-    }
-    return chips;
-  }, [snjallskra, marks, currentHoleIndex, currentHole]);
-
-  if (activeLocation && currentHole.greenLocation) {
-    initialBounds = [
-      [activeLocation.lat, activeLocation.lng],
-      [currentHole.greenLocation.lat, currentHole.greenLocation.lng]
-    ];
-  }
-
-  const calculateTotal = (arr, start, end) => arr.slice(start, end).reduce((a, b) => a + b, 0);
-
-  const SQUARE_CELL_SIZE = '44px';
-  const cellStyle = {
-    display: 'flex', justifyContent: 'center', alignItems: 'center', height: SQUARE_CELL_SIZE,
-    borderBottom: `1px solid ${theme.scLine}`, borderRight: `1px solid ${theme.scLine}`, boxSizing: 'border-box', position: 'relative',
-    color: theme.scText
-  };
-  const summaryCellStyle = { ...cellStyle, fontWeight: 'bold', backgroundColor: theme.scAccent, color: theme.scText };
-  
-  const getGridCols = () => {
-    const cols = ['40px', '40px'];
-    if (trackScore) cols.push('1fr');
-    if (trackPutts) cols.push('1fr');
-    if (trackGame) cols.push('75px');
-    return cols.join(' ');
-  };
-
-  const topPillStyle = {
-    position: 'absolute', top: 'max(env(safe-area-inset-top, 15px), 15px)', zIndex: 1000,
-    ...cardStyle, padding: '0 12px', borderRadius: theme.radius, boxSizing: 'border-box',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', height: '34px'
-  };
-
-  const stepperBtnStyle = {
-    width: '40px', height: '40px', border: 'none', background: 'transparent',
-    color: theme.panelText, fontSize: '2.5rem', fontWeight: '300', cursor: 'pointer',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
-    outline: 'none', touchAction: 'manipulation'
-  };
-
-  const invisibleInputStyle = { 
-    position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', 
-    boxSizing: 'border-box', textAlign: 'center', fontSize: '1.2rem', 
-    border: 'none', background: 'transparent', outline: 'none', margin: 0, padding: 0, zIndex: 2 
-  };
-
-  const renderRow = (holeData, index) => {
-    const scoreVal = scores[index] || 0;
-    const { shape, textColor } = getScoreStyles(scoreVal, holeData.par, theme.scText);
-    return (
-      <React.Fragment key={index}>
-        <div
-          onClick={() => { setCurrentHoleIndex(index); setShowScorecard(false); }}
-          style={{ ...cellStyle, fontWeight: 'bold', cursor: 'pointer', backgroundColor: theme.scHead }}
-          title={`Fara á holu ${holeData.hole}`}
-        >
-          {holeData.hole}
-        </div>
-        <div style={{ ...cellStyle, fontWeight: 'normal' }}>{holeData.par}</div>
-
-        {trackScore && (
-          <div style={{ ...cellStyle }}>
-            <div style={{ position: 'absolute', zIndex: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {renderScoreShape(shape, theme.scShape)}
-            </div>
-            {isExporting ? (
-              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: textColor, fontWeight: 'bold' }}>
-                {scoreVal || ''}
-              </div>
-            ) : (
-              <input 
-                type="number" inputMode="numeric" className="no-spinners"
-                value={scoreVal || ''} onChange={(e) => handleScoreChange(e.target.value, index)} 
-                style={{ ...invisibleInputStyle, color: textColor, fontWeight: 'bold' }} 
-              />
-            )}
-          </div>
-        )}
-        
-        {trackPutts && (
-          <div style={{ ...cellStyle }}>
-            {/* Small check when the hole's data is complete: every sheet question
-                answered (Skrá gögn sjálfur) or every non-putt stroke marked (Snjallskrá) */}
-            {!isExporting && (
-              (statSheet && isSheetComplete(sheets[index], holeData.par)) ||
-              (snjallskra && allShotsMarked(scores[index] || 0, putts[index] || 0, marks[index]))
-            ) && (
-              <span style={{ position: 'absolute', top: '1px', right: '3px', fontSize: '0.6rem', opacity: 0.7, zIndex: 3, pointerEvents: 'none' }}>✓</span>
-            )}
-            {isExporting ? (
-              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.scText, fontWeight: 'bold' }}>
-                {putts[index] || ''}
-              </div>
-            ) : (
-              <input 
-                type="number" inputMode="numeric" className="no-spinners"
-                value={putts[index] || ''} onChange={(e) => handlePuttsChange(e.target.value, index)} 
-                style={{ ...invisibleInputStyle, color: theme.scText, fontWeight: 'bold' }} 
-              />
-            )}
-          </div>
-        )}
-        
-        {trackGame && (
-          <div style={{ ...cellStyle, padding: '0' }}>
-            {isExporting ? (
-              <div style={{ ...invisibleInputStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.scText, fontWeight: 'normal', fontSize: '0.9rem' }}>
-                {matchPlay[index] === 'A' ? 'Halli' : matchPlay[index] === 'B' ? 'Hinir' : matchPlay[index] === 'H' ? 'Féll' : ''}
-              </div>
-            ) : (
-              <select 
-                value={matchPlay[index]} onChange={(e) => updateMatch(e.target.value, index)} 
-                style={{ ...invisibleInputStyle, color: theme.scText, appearance: 'none', textAlignLast: 'center', fontWeight: 'bold', fontSize: '0.95rem' }}
-              >
-                <option value=""></option>
-                <option value="A">Halli</option>
-                <option value="B">Hinir</option>
-                <option value="H">Féll</option>
-              </select>
-            )}
-          </div>
-        )}
-
-      </React.Fragment>
-    );
-  };
-
-  // Stat-sheet option pill (selected = filled) and one question row.
-  const sheetOptStyle = (selected) => ({
-    flex: 1, minWidth: 0, padding: '9px 2px', borderRadius: theme.radius, cursor: 'pointer',
-    fontWeight: 700, fontSize: '0.72rem', textAlign: 'center', boxSizing: 'border-box',
-    backgroundColor: selected ? theme.panelText : 'transparent',
-    color: selected ? theme.scBg : theme.panelText,
-    border: `1px solid ${selected ? theme.panelText : theme.hairLight}`,
-    textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap',
-    overflow: 'hidden', textOverflow: 'ellipsis'
-  });
-  const sheetGroup = (label, field, options) => (
-    <div style={{ marginBottom: '10px' }}>
-      <div style={{ ...microLabel, marginBottom: '5px' }}>{label}</div>
-      <div style={{ display: 'flex', gap: '6px' }}>
-        {options.map((o) => (
-          <div key={String(o.v)} onClick={() => setSheetField(field, o.v)} title={o.t} style={sheetOptStyle(sheetDraft[field] === o.v)}>
-            {o.l}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
-  const showFooter = trackScore || trackPutts || trackGame;
-
-  // Measure the real UI insets so framing is exact, not estimated. Top inset =
-  // the top pill's offset + height + margin. Bottom inset = the gap from the
-  // viewport bottom up to the highest of the footer / prev-next button row.
-  useEffect(() => {
-    const measure = () => {
-      const pill = topPillRef.current;
-      const top = pill ? pill.offsetTop + pill.offsetHeight + FRAME_TOP_PX : 64;
-      const vh = window.innerHeight;
-      let obstructionTop = Infinity;
-      if (footerRef.current) obstructionTop = Math.min(obstructionTop, footerRef.current.getBoundingClientRect().top);
-      if (navRef.current) obstructionTop = Math.min(obstructionTop, navRef.current.getBoundingClientRect().top);
-      const bottom = obstructionTop === Infinity ? 0 : Math.max(0, vh - obstructionTop + FRAME_BOTTOM_PX);
-      setInsets((prev) => (prev.top === top && prev.bottom === bottom) ? prev : { top, bottom });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    if (footerRef.current) ro.observe(footerRef.current);
-    if (navRef.current) ro.observe(navRef.current);
-    window.addEventListener('resize', measure);
-    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
-  }, [showFooter, trackScore, trackPutts, trackGame]);
-
-  const actionBtnStyle = {
-    flex: 1, padding: '15px 5px', background: 'transparent', border: `2px solid ${theme.scLine}`, borderRadius: theme.radius,
-    fontWeight: 'bold', fontSize: '0.95rem', color: theme.scText, cursor: 'pointer',
-    textTransform: 'uppercase', letterSpacing: '0.5px', textAlign: 'center'
-  };
-
-  // Small stepper for the bag editor (scorecard-themed, smaller than the footer steppers).
-  const clubStepBtnStyle = {
-    width: '24px', height: '24px', border: 'none', background: 'transparent', color: theme.scText,
-    fontSize: '1.4rem', fontWeight: 300, cursor: 'pointer', display: 'flex', alignItems: 'center',
-    justifyContent: 'center', padding: 0, lineHeight: 1, touchAction: 'manipulation'
-  };
-  // Section heading inside the scorecard (smallcaps, left-aligned).
-  const sectionHeadingStyle = { ...microLabel, fontSize: '0.62rem', opacity: 0.55, margin: '0 0 12px 2px' };
-  // Text fields on the bag screen (add-club form).
-  const bagInputStyle = {
-    minWidth: 0, flex: 1, padding: '10px', borderRadius: theme.radius,
-    border: `1px solid ${theme.scLine}`, background: 'transparent', color: theme.scText,
-    fontSize: '1rem', boxSizing: 'border-box', outline: 'none', fontFamily: theme.sans
-  };
-
-  const clearBtnStyle = {
-    width: '100%', background: '#fff', color: '#d32f2f', padding: '15px', border: '2px solid #d32f2f', 
-    borderRadius: theme.radius, fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer', 
-    textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)',
-    boxShadow: theme.shadow
-  };
-
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', height: '100dvh', width: '100vw',
@@ -1591,7 +535,7 @@ export default function App() {
         .num { font-family: ${theme.num}; font-feature-settings: 'tnum' 1; font-variant-numeric: tabular-nums; }
         @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
       `}</style>
-      
+
       <video ref={videoRef} muted playsInline style={{ display: 'none' }} />
       <form ref={loginFormRef} method="POST" action="https://www.golfbox.dk/login.asp?lcid=1039" style={{ display: 'none' }}>
         <input type="hidden" name="loginform.submitted" value="true" />
@@ -1631,591 +575,78 @@ export default function App() {
         </div>
       )}
 
-      {/* FULL-SCREEN MAP WITH LAYER STACKING */}
-      <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
-        <MapContainer bounds={initialBounds} doubleClickZoom={false} zoomControl={false} rotateControl={false} zoomSnap={0} maxZoom={22} rotate={true} style={{ width: '100%', height: '100%' }}>
-          <MapCameraTracker startLoc={activeLocation} greenLoc={currentHole.greenLocation} polygon={holePolygon} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} topInsetPx={insets.top} bottomInsetPx={insets.bottom} />
-          <MapRotationManager bearing={mapBearing} centerTrigger={centerTrigger} currentHoleIndex={currentHoleIndex} isTeeView={isTeeView} />
-          <MapEvents setTargetPoint={setTargetPoint} />
+      <MapScreen
+        theme={theme}
+        currentHoleIndex={currentHoleIndex} setCurrentHoleIndex={setCurrentHoleIndex}
+        isTeeView={isTeeView} setIsTeeView={setIsTeeView}
+        gpsLocation={gpsLocation} gpsError={gpsError}
+        targetPoint={targetPoint} setTargetPoint={setTargetPoint}
+        wind={wind} simpleView={simpleView} bag={bag} showClubRec={showClubRec}
+        snjallskra={snjallskra} statSheet={statSheet} marks={marks}
+        canMark={canMark} markFlash={markFlash} vitiFlash={vitiFlash} lastShotLen={lastShotLen}
+        markClick={markClick} markPressStart={markPressStart} markPressEnd={markPressEnd} addMark={addMark}
+        openSheet={openSheet} sheetHole={sheetHole} sheetDraft={sheetDraft}
+        setSheetField={setSheetField} saveSheet={saveSheet} skipSheet={skipSheet}
+        scores={scores} putts={putts} matchPlay={matchPlay}
+        adjustScore={adjustScore} adjustPutts={adjustPutts} toggleMatchPlay={toggleMatchPlay}
+        trackScore={trackScore} trackPutts={trackPutts} trackGame={trackGame}
+        onOpenScorecard={() => setShowScorecard(true)}
+      />
 
-          <TileLayer
-            url="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}&v=2"
-            attribution="&copy; Google"
-            maxZoom={22}
-            maxNativeZoom={21}
-            className="punchy-map-tiles"
-          />
-
-          {/* Traced green outline — verification only (SHOW_GREEN_OUTLINES).
-              Under markers; non-interactive so taps pass through. */}
-          {SHOW_GREEN_OUTLINES && holePolygon && (
-            <Polygon positions={holePolygon} interactive={false}
-              pathOptions={{ color: 'white', weight: 1.5, opacity: 0.75, fill: true, fillColor: 'white', fillOpacity: 0.05 }} />
-          )}
-          {/* Largest-inscribed-circle "safe aim" — faint dashed outline, complex view only */}
-          {!simpleView && greenInfo && greenInfo.aim && (
-            <Circle center={[greenInfo.aim.lat, greenInfo.aim.lng]} radius={greenInfo.aimRadius} interactive={false}
-              pathOptions={{ color: 'white', weight: 1, opacity: 0.5, fillOpacity: 0, dashArray: '4 6' }} />
-          )}
-
-          <Marker position={[currentHole.greenLocation.lat, currentHole.greenLocation.lng]} icon={greenIcon} rotateWithView={false} />
-          {/* Front/back chips on the green (from waypoint if aiming, else player) */}
-          {greenFB && greenFrontChip && <Marker position={[greenFB.frontPt.lat, greenFB.frontPt.lng]} icon={greenFrontChip} rotateWithView={false} />}
-          {greenFB && greenBackChip && <Marker position={[greenFB.backPt.lat, greenFB.backPt.lng]} icon={greenBackChip} rotateWithView={false} />}
-          {userLocation && <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} rotateWithView={false} />}
-          {targetPoint && <Marker position={[targetPoint.lat, targetPoint.lng]} icon={targetIcon} rotateWithView={false} />}
-          {/* Distances on the line midpoints: player→mark and mark→hole */}
-          {userLocation && targetPoint && toTargetChip && (
-            <Marker position={[(userLocation.lat + targetPoint.lat) / 2, (userLocation.lng + targetPoint.lng) / 2]} icon={toTargetChip} rotateWithView={false} />
-          )}
-          {targetPoint && targetToGreenChip && (
-            <Marker position={[(targetPoint.lat + currentHole.greenLocation.lat) / 2, (targetPoint.lng + currentHole.greenLocation.lng) / 2]} icon={targetToGreenChip} rotateWithView={false} />
-          )}
-          {userLocation && !targetPoint && <Polyline positions={[[userLocation.lat, userLocation.lng], [currentHole.greenLocation.lat, currentHole.greenLocation.lng]]} pathOptions={{ color: 'white', weight: 2 }} />}
-          {userLocation && targetPoint && <BrokenPolyline a={userLocation} b={targetPoint} meters={distanceUserToTarget} />}
-          {targetPoint && <BrokenPolyline a={targetPoint} b={currentHole.greenLocation} meters={distanceTargetToGreen} />}
-          {/* Snjallskrá: faint dashed tee → shot → shot trail, a dot per recorded
-              shot (triangle = relief/drop), faint length labels on the segments */}
-          {snjallskra && (marks[currentHoleIndex] || []).length > 0 && (
-            <>
-              <Polyline
-                positions={[[currentHole.teeLocation.lat, currentHole.teeLocation.lng], ...marks[currentHoleIndex].map((m) => [m.lat, m.lng])]}
-                pathOptions={{ color: 'white', weight: 2, opacity: 0.6, dashArray: '4 6' }}
-              />
-              {marks[currentHoleIndex].map((m) => (
-                <Marker key={m.t} position={[m.lat, m.lng]} icon={m.drop ? dropMarkIcon : markDotIcon} rotateWithView={false} />
-              ))}
-              {trailChips.map((c) => (
-                <Marker key={'c' + c.key} position={c.pos} icon={c.icon} rotateWithView={false} />
-              ))}
-            </>
-          )}
-        </MapContainer>
-      </div>
-
-      {/* FLOATING TOP BAR - LEFT PILL */}
-      <div ref={topPillRef} style={{ ...topPillStyle, left: '15px', gap: '8px' }}>
-        <span style={{ ...microLabel }}>Hola</span>
-        <span className="num" style={{ fontSize: '1.3rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.hole}</span>
-        <span style={{ width: '1px', height: '16px', background: theme.hairLight }} />
-        <span style={{ ...microLabel }}>Par</span>
-        <span className="num" style={{ fontSize: '1.3rem', fontWeight: 700, lineHeight: 1 }}>{currentHole.par}</span>
-      </div>
-
-      {/* FLOATING TOP BAR - RIGHT PILL (same width as the info rail) */}
-      <button onClick={() => setShowScorecard(true)} style={{ ...topPillStyle, right: '15px', width: '104px', cursor: 'pointer' }}>
-        <span style={{ ...microLabel, fontSize: '0.68rem', opacity: 0.9, letterSpacing: '0.12em' }}>Skorkort</span>
-      </button>
-
-      {/* FLOATING TOOLS LEFT */}
-      <div style={{ position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 54px)', left: '15px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1000 }}>
-        <div onClick={() => setIsTeeView(!isTeeView)} style={{ ...cardStyle,padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-          {isTeeView ? <Flag size={20} /> : <Navigation size={20} />}
-        </div>
-        {!isTeeView && (
-          <div onClick={() => setCenterTrigger(c => c + 1)} style={{ ...cardStyle,padding: '11px', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-            <Crosshair size={20} />
-          </div>
-        )}
-        {/* SKRÁ HÖGG — record a shot at the current GPS fix; long-press = undo last */}
-        {snjallskra && (
-          <div
-            onClick={markClick}
-            onMouseDown={markPressStart} onMouseUp={markPressEnd} onMouseLeave={markPressEnd}
-            onTouchStart={markPressStart} onTouchEnd={markPressEnd} onTouchCancel={markPressEnd}
-            onContextMenu={(e) => e.preventDefault()}
-            title="Skrá högg (halda inni = afturkalla)"
-            style={{
-              ...cardStyle, padding: '11px 8px', borderRadius: theme.radius, position: 'relative',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-              cursor: canMark ? 'pointer' : 'default', opacity: canMark ? 1 : 0.45,
-              background: markFlash ? theme.accent : theme.panel, transition: 'background 0.15s ease',
-              fontWeight: 700, fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.08em',
-              userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation'
-            }}
-          >
-            Skrá<br />högg
-            {(marks[currentHoleIndex] || []).length > 0 && (
-              <span className="num" style={{
-                position: 'absolute', top: '-7px', right: '-7px', minWidth: '18px', height: '18px',
-                borderRadius: '9px', background: theme.chip.bg, color: theme.chip.fg,
-                border: `1px solid ${theme.chip.border}`, display: 'flex', alignItems: 'center',
-                justifyContent: 'center', fontSize: '0.62rem', fontWeight: 700, padding: '0 4px', boxSizing: 'border-box'
-              }}>{marks[currentHoleIndex].length}</span>
-            )}
-          </div>
-        )}
-        {/* VÍTI — record the relief point after a penalty (same grey rules) */}
-        {snjallskra && (
-          <div
-            onClick={() => addMark(true)}
-            title="Víti — skrá vítastað"
-            style={{
-              ...cardStyle, padding: '11px 8px', borderRadius: theme.radius,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-              cursor: canMark ? 'pointer' : 'default', opacity: canMark ? 1 : 0.45,
-              background: vitiFlash ? theme.accent : theme.panel, transition: 'background 0.15s ease',
-              fontWeight: 700, fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.08em',
-              userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation'
-            }}
-          >
-            Víti
-          </div>
-        )}
-      </div>
-
-      {/* RIGHT INFO RAIL — distance + conditions, aligned with the left tools */}
-      <div style={{
-        position: 'absolute', top: 'calc(max(env(safe-area-inset-top, 15px), 15px) + 54px)', right: '15px', zIndex: 1000,
-        width: '104px', display: 'flex', flexDirection: 'column', gap: '8px', pointerEvents: 'none'
-      }}>
-        <div style={{
-          ...cardStyle, borderRadius: theme.radius, padding: '8px 6px',
-          display: 'flex', flexDirection: 'column', alignItems: 'center'
-        }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px' }}>
-            <span className="num" style={{ fontSize: railDist !== null ? '2.6rem' : '1.05rem', fontWeight: 700, lineHeight: 0.82 }}>
-              {railDist !== null ? railDist : gpsError ? 'Engin GPS' : 'Leitar...'}
-            </span>
-            {railDist !== null && <span style={{ ...microLabel, fontSize: '0.5rem' }}>m</span>}
-          </div>
-          {showPlaysLike && (
-            <>
-              <span style={{ width: '78%', height: '1px', background: theme.hairLight, margin: '5px 0 3px' }} />
-              <span style={{ ...microLabel, fontSize: '0.46rem' }}>Spilast</span>
-              <span className="num" style={{ fontSize: '1.5rem', fontWeight: 700, lineHeight: 0.92, color: theme.accent }}>{railPlaysLike}</span>
-            </>
-          )}
-          {showClubLine && (
-            <>
-              <span style={{ width: '78%', height: '1px', background: theme.hairLight, margin: '5px 0 3px' }} />
-              <span style={{ ...microLabel, fontSize: '0.46rem' }}>Kylfa</span>
-              <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.95 }}>
-                {recommendation.label}
-                {recommendation.pct != null && <span style={{ fontSize: '0.75em', opacity: 0.7 }}> {recommendation.pct}%</span>}
-              </span>
-            </>
-          )}
-        </div>
-
-        {/* Conditions — wind | slope side by side, same width as the distance box */}
-        {(showWind || showElev) && (
-          <div style={{
-            ...cardStyle, borderRadius: theme.radius, padding: '7px 6px',
-            display: 'flex', flexDirection: stackWindElev ? 'column' : 'row',
-            alignItems: 'center', justifyContent: 'center', gap: stackWindElev ? '5px' : '8px'
-          }}>
-            {showWind && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  width: '18px', height: '18px', borderRadius: '50%', border: `1.5px solid ${theme.panelText}`
-                }}>
-                  <span style={{ display: 'inline-block', transform: `rotate(${windRelAngle}deg)`, fontSize: '0.72rem', lineHeight: 1 }}>↑</span>
-                </span>
-                <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.85 }}>{Math.round(wind.speed)}</span>
-                {/* Gust as a smaller secondary number, only when meaningfully gustier */}
-                {gustShown && (
-                  <span className="num" style={{ fontSize: '0.8em', fontWeight: 700, lineHeight: 0.85, opacity: 0.75 }}>/{Math.round(wind.gust)}</span>
-                )}
-              </div>
-            )}
-            {showWind && showElev && (stackWindElev
-              ? <span style={{ width: '62%', height: '1px', background: theme.hairLight }} />
-              : <span style={{ width: '1px', alignSelf: 'stretch', background: theme.hairLight }} />
-            )}
-            {showElev && (
-              <span className="num" style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 0.85 }}>
-                {elevRounded > 0 ? '▲' : elevRounded < 0 ? '▼' : '–'}{Math.abs(elevRounded)}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* MAP CONTROLS - PREV / NEXT */}
-      <div ref={navRef} style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '15px', zIndex: 1000, transition: 'bottom 0.3s ease' }}>
-        <button onClick={() => setCurrentHoleIndex(Math.max(0, currentHoleIndex - 1))} style={{ ...cardStyle,padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
-          Fyrri
-        </button>
-      </div>
-      <div style={{ position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)', right: '15px', zIndex: 1000, transition: 'bottom 0.3s ease', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '10px' }}>
-        {/* Open the current hole's stat sheet by hand (Skrá gögn sjálfur only) */}
-        {statSheet && (
-          <button onClick={() => openSheet(currentHoleIndex)} title="Skrá gögn" style={{ ...cardStyle, padding: '11px', borderRadius: theme.radius, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <ClipboardList size={20} />
-          </button>
-        )}
-        <button onClick={() => setCurrentHoleIndex(Math.min(17, currentHoleIndex + 1))} style={{ ...cardStyle,padding: '11px 18px', borderRadius: theme.radius, fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.16em' }}>
-          Næsta
-        </button>
-      </div>
-
-      {/* SHOT LENGTH TOAST — the shot just recorded, centered between Fyrri/Næsta */}
-      {lastShotLen !== null && (
-        <div style={{
-          position: 'absolute', bottom: showFooter ? 'calc(env(safe-area-inset-bottom, 15px) + 140px)' : 'calc(env(safe-area-inset-bottom, 15px) + 15px)',
-          left: '50%', transform: 'translateX(-50%)', zIndex: 1000, pointerEvents: 'none',
-          ...cardStyle, borderRadius: theme.radius, padding: '9px 16px',
-          display: 'flex', alignItems: 'baseline', gap: '5px', animation: 'sheetUp 0.18s ease-out'
-        }}>
-          <span className="num" style={{ fontSize: '1.7rem', fontWeight: 700, lineHeight: 0.9 }}>{lastShotLen}</span>
-          <span style={{ ...microLabel, fontSize: '0.55rem' }}>m högg</span>
-        </div>
-      )}
-
-      {/* UNIFIED SCORING & LEIKUR FOOTER */}
-      {showFooter && (
-        <div ref={footerRef} style={{
-          position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 15px) + 15px)', left: '50%', transform: 'translateX(-50%)',
-          zIndex: 1000, width: '92%', maxWidth: '380px', display: 'flex', flexDirection: 'column',
-          ...cardStyle, borderRadius: theme.radius,
-          overflow: 'hidden'
-        }}>
-          {(trackScore || trackPutts) && (
-            <div style={{ display: 'flex', flexDirection: 'row', width: '100%' }}>
-              {trackScore && (
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px' }}>
-                  <button onClick={() => adjustScore(-1)} style={stepperBtnStyle}>{"\u2212"}</button>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <span className="num" style={{ fontSize: '1.7rem', fontWeight: 700, color: theme.panelText, lineHeight: '1' }}>
-                      {scores[currentHoleIndex] || 0}
-                    </span>
-                    <span style={{ ...microLabel, marginTop: '3px' }}>Högg</span>
-                  </div>
-                  <button onClick={() => adjustScore(1)} style={stepperBtnStyle}>+</button>
-                </div>
-              )}
-              {trackPutts && (
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderLeft: trackScore ? `1px solid ${theme.hairLight}` : 'none' }}>
-                  <button onClick={() => adjustPutts(-1)} style={stepperBtnStyle}>{"\u2212"}</button>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <span className="num" style={{ fontSize: '1.7rem', fontWeight: 700, color: theme.panelText, lineHeight: '1' }}>
-                      {putts[currentHoleIndex] || 0}
-                    </span>
-                    <span style={{ ...microLabel, marginTop: '3px' }}>Pútt</span>
-                  </div>
-                  <button onClick={() => adjustPutts(1)} style={stepperBtnStyle}>+</button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {trackGame && (
-            <div style={{ 
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', 
-              width: '100%', padding: '8px', 
-              borderTop: (trackScore || trackPutts) ? `1px solid ${theme.hairLight}` : 'none',
-              boxSizing: 'border-box'
-            }}>
-              <MatchToggleBtn label="Halli" value="A" selected={matchPlay[currentHoleIndex] === 'A'} onClick={toggleMatchPlay} theme={theme} />
-              <MatchToggleBtn label="Hinir" value="B" selected={matchPlay[currentHoleIndex] === 'B'} onClick={toggleMatchPlay} theme={theme} />
-              <MatchToggleBtn label="Féll" value="H" selected={matchPlay[currentHoleIndex] === 'H'} onClick={toggleMatchPlay} theme={theme} />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* SCORECARD OVERLAY */}
       {showScorecard && (
-        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 9999, display: 'flex', flexDirection: 'column', color: theme.scText }}>
-          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
-            <div onClick={() => setShowSettings(true)} title="Stillingar" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'start' }}>
-              <Settings size={20} />
-            </div>
-            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Skorkort</h2>
-            <div onClick={() => setShowScorecard(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
-              <X size={24} />
-            </div>
-          </div>
-
-          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-            <div style={{ display: 'flex', justifyContent: 'center', width: '100%' }}>
-              <div ref={scorecardRef} style={{ background: theme.scCell, borderRadius: '0', border: `2px solid ${theme.scLine}`, overflow: 'hidden', marginBottom: '25px', width: '100%', boxShadow: theme.shadow }}>
-                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '0.8rem', backgroundColor: theme.scHead, borderBottom: `2px solid ${theme.scLine}`, color: theme.scText }}>
-                  <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>H</strong>
-                  <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>P</strong>
-                  {trackScore && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>SKOR</strong>}
-                  {trackPutts && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>PÚTT</strong>}
-                  {trackGame && <strong style={{ ...cellStyle, borderTop: 'none', backgroundColor: 'transparent' }}>LEIKUR</strong>}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: getGridCols(), textAlign: 'center', fontSize: '1.1rem', backgroundColor: theme.scCell, color: theme.scText }}>
-                  {courseData.slice(0, 9).map((hole, i) => renderRow(hole, i))}
-                  <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>ÚT</div>
-                  <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{courseData.slice(0, 9).reduce((sum, h) => sum + h.par, 0)}</div>
-                  {trackScore && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{calculateTotal(scores, 0, 9)}</div>}
-                  {trackPutts && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}>{calculateTotal(putts, 0, 9)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, borderBottom: `2px solid ${theme.scLine}` }}><span style={{ fontSize: '0.65rem' }}>{matchSummary(0, 9)}</span></div>}
-                  {courseData.slice(9, 18).map((hole, i) => renderRow(hole, i + 9))}
-                  <div style={{ ...summaryCellStyle }}>INN</div>
-                  <div style={summaryCellStyle}>{courseData.slice(9, 18).reduce((sum, h) => sum + h.par, 0)}</div>
-                  {trackScore && <div style={summaryCellStyle}>{calculateTotal(scores, 9, 18)}</div>}
-                  {trackPutts && <div style={summaryCellStyle}>{calculateTotal(putts, 9, 18)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle }}><span style={{ fontSize: '0.65rem' }}>{matchSummary(9, 18)}</span></div>}
-                  <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>TOT</div>
-                  <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{courseData.reduce((sum, h) => sum + h.par, 0)}</div>
-                  {trackScore && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{calculateTotal(scores, 0, 18)}</div>}
-                  {trackPutts && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}>{calculateTotal(putts, 0, 18)}</div>}
-                  {trackGame && <div style={{ ...summaryCellStyle, backgroundColor: theme.scAccent, borderBottom: 'none' }}><span style={{ fontSize: '0.65rem' }}>{matchSummary(0, 18)}</span></div>}
-                </div>
-              </div>
-            </div>
-
-            {/* Buttons live directly under the card — no section headings */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', width: '100%', marginBottom: '28px' }}>
-              <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
-                <button onClick={saveRound} style={{ ...actionBtnStyle, background: theme.darkGreen, color: '#fff', border: `2px solid ${theme.darkGreen}` }}>Vista hring</button>
-                <button onClick={saveScorecardImage} style={actionBtnStyle}>Vista mynd</button>
-              </div>
-              <button onClick={() => setShowRounds(true)} style={{ ...actionBtnStyle, width: '100%', flex: 'none' }}>
-                Mínir hringir
-              </button>
-              <div style={{ display: 'flex', gap: '15px', width: '100%' }}>
-                <button onClick={startPiP} style={{ ...actionBtnStyle, color: '#4A90E2', border: '2px solid #4A90E2' }}>Opna í PiP</button>
-                <button onClick={openGolfBox} style={actionBtnStyle}>Skrá í GolfBox</button>
-              </div>
-            </div>
-
-            {/* Start a fresh round — destructive, always last */}
-            <button onClick={clearRound} style={clearBtnStyle}>Byrja nýjan hring</button>
-          </div>
-        </div>
+        <ScorecardScreen
+          theme={theme}
+          scores={scores} putts={putts} matchPlay={matchPlay}
+          trackScore={trackScore} trackPutts={trackPutts} trackGame={trackGame}
+          statSheet={statSheet} snjallskra={snjallskra} sheets={sheets} marks={marks}
+          isExporting={isExporting} scorecardRef={scorecardRef}
+          handleScoreChange={handleScoreChange} handlePuttsChange={handlePuttsChange} updateMatch={updateMatch}
+          saveRound={saveRound} saveScorecardImage={saveScorecardImage}
+          startPiP={startPiP} openGolfBox={openGolfBox} clearRound={clearRound}
+          onGoToHole={(index) => { setCurrentHoleIndex(index); setShowScorecard(false); }}
+          onOpenRounds={() => setShowRounds(true)}
+          onOpenSettings={() => setShowSettings(true)}
+          onClose={() => setShowScorecard(false)}
+        />
       )}
 
-      {/* BAG SCREEN OVERLAY — opened from settings, so it sits one layer above it */}
       {showBag && (
-        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 10001, display: 'flex', flexDirection: 'column', color: theme.scText }}>
-          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
-            <div />
-            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Pokinn</h2>
-            <div onClick={() => setShowBag(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
-              <X size={24} />
-            </div>
-          </div>
-
-          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px', marginBottom: '28px' }}>
-              {bag.map((c) => (
-                <div key={c.id} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px',
-                  border: `1px solid ${theme.scLine}`, borderRadius: theme.radius, padding: '6px 10px',
-                  opacity: c.enabled ? 1 : 0.4, minWidth: 0, boxSizing: 'border-box'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
-                    <button onClick={() => deleteClub(c.id)} title="Eyða kylfu" style={{ ...clubStepBtnStyle, width: '20px', height: '20px', opacity: 0.65 }}>
-                      <X size={13} />
-                    </button>
-                    <span onClick={() => toggleClub(c.id)} title="Smelltu til að taka úr/í pokann" style={{
-                      cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem',
-                      textDecoration: c.enabled ? 'none' : 'line-through',
-                      minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-                    }}>{c.label}</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1px' }}>
-                    <button onClick={() => adjustClubMax(c.id, -5)} style={clubStepBtnStyle}>{"−"}</button>
-                    <span className="num" style={{ fontSize: '0.95rem', fontWeight: 700, minWidth: '36px', textAlign: 'center' }}>
-                      {c.max}<span style={{ fontSize: '0.6em', opacity: 0.7 }}>m</span>
-                    </span>
-                    <button onClick={() => adjustClubMax(c.id, 5)} style={clubStepBtnStyle}>+</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Add a club: name + max distance, inserted sorted by distance */}
-            <div style={sectionHeadingStyle}>Bæta við kylfu</div>
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '28px' }}>
-              <input
-                type="text" value={newClubName} onChange={(e) => setNewClubName(e.target.value)}
-                placeholder="Nafn" style={bagInputStyle}
-              />
-              <input
-                type="number" inputMode="numeric" className="no-spinners"
-                value={newClubMax} onChange={(e) => setNewClubMax(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') addClub(); }}
-                placeholder="Metrar" style={{ ...bagInputStyle, flex: '0 0 90px' }}
-              />
-              <button onClick={addClub} style={{
-                padding: '0 14px', background: theme.scText, color: theme.scBg, border: 'none',
-                borderRadius: theme.radius, fontWeight: 'bold', fontSize: '0.8rem', cursor: 'pointer',
-                textTransform: 'uppercase', letterSpacing: '0.5px'
-              }}>Bæta við</button>
-            </div>
-
-            <button onClick={resetBag} style={{
-              background: 'transparent', color: theme.scText, border: `1px solid ${theme.scLine}`,
-              borderRadius: theme.radius, padding: '12px 14px', fontWeight: 'bold', fontSize: '0.8rem',
-              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', width: '100%',
-              marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
-            }}>Sjálfgefinn poki</button>
-          </div>
-        </div>
+        <BagScreen
+          theme={theme} bag={bag}
+          newClubName={newClubName} setNewClubName={setNewClubName}
+          newClubMax={newClubMax} setNewClubMax={setNewClubMax}
+          adjustClubMax={adjustClubMax} toggleClub={toggleClub}
+          deleteClub={deleteClub} addClub={addClub} resetBag={resetBag}
+          onClose={() => setShowBag(false)}
+        />
       )}
 
-      {/* ROUNDS SCREEN OVERLAY — saved rounds + data export, sits above the scorecard */}
       {showRounds && (
-        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 10000, display: 'flex', flexDirection: 'column', color: theme.scText }}>
-          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
-            <div />
-            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Mínir hringir</h2>
-            <div onClick={() => setShowRounds(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
-              <X size={24} />
-            </div>
-          </div>
-
-          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-            {rounds.length === 0 ? (
-              <div style={{ fontSize: '0.85rem', opacity: 0.6, margin: '0 2px 28px' }}>Engir vistaðir hringir.</div>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px', marginBottom: '28px' }}>
-                {rounds.map((r) => {
-                  const s = summarizeRound(r);
-                  const diffText = s.holesPlayed === 0 ? '–' : s.diff === 0 ? '±0' : s.diff > 0 ? `+${s.diff}` : `${s.diff}`;
-                  const open = expandedRound === r.date;
-                  return (
-                    <div key={r.date} style={{ border: `1px solid ${theme.scLine}`, borderRadius: theme.radius }}>
-                      <div onClick={() => setExpandedRound(open ? null : r.date)} style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
-                        padding: '10px 12px', cursor: 'pointer'
-                      }}>
-                        {/* Tick = include this round in the AI prompt */}
-                        <span
-                          onClick={(e) => { e.stopPropagation(); toggleRoundSel(r.date); }}
-                          title="Velja fyrir AI greiningu"
-                          style={{
-                            width: '20px', height: '20px', borderRadius: '4px', flex: 'none',
-                            border: `1px solid ${selectedRounds.includes(r.date) ? theme.scText : theme.scLine}`,
-                            backgroundColor: selectedRounds.includes(r.date) ? theme.scText : 'transparent',
-                            color: theme.scBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', boxSizing: 'border-box'
-                          }}
-                        >{selectedRounds.includes(r.date) ? '✓' : ''}</span>
-                        <span style={{ fontWeight: 'bold', fontSize: '0.85rem', flex: 1 }}>{fmtRoundDate(r.date)}</span>
-                        <span className="num" style={{ fontSize: '1rem', fontWeight: 700 }}>
-                          {s.total}<span style={{ fontSize: '0.75em', opacity: 0.7 }}> ({diffText})</span>
-                        </span>
-                      </div>
-                      {open && (
-                        <div style={{
-                          borderTop: `1px solid ${theme.scLine}`, padding: '10px 12px',
-                          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px'
-                        }}>
-                          <div style={{ fontSize: '0.8rem', lineHeight: 1.6 }}>
-                            <div>ÚT {s.out} · INN {s.inn} · Samtals {s.total}</div>
-                            {s.puttsTotal > 0 && <div>Pútt {s.puttsTotal}</div>}
-                          </div>
-                          <div style={{ display: 'flex', gap: '6px', flex: 'none' }}>
-                            <button onClick={() => exportRound(r)} style={{
-                              background: 'transparent', color: theme.scText, border: `1px solid ${theme.scLine}`,
-                              borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
-                              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
-                            }}>Sækja</button>
-                            <button onClick={() => deleteRound(r.date)} style={{
-                              background: 'transparent', color: '#d32f2f', border: '1px solid #d32f2f',
-                              borderRadius: theme.radius, padding: '6px 10px', fontWeight: 'bold', fontSize: '0.7rem',
-                              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px'
-                            }}>Eyða</button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Export — AI prompt from the ticked rounds, or all data as JSON */}
-            <div style={sectionHeadingStyle}>Sækja gögn</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)' }}>
-              <button
-                onClick={copyAIPrompt}
-                style={{ ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box', opacity: selectedRounds.length ? 1 : 0.5 }}
-              >Sækja AI prompt{selectedRounds.length ? ` (${selectedRounds.length})` : ''}</button>
-              <button
-                onClick={exportAllData}
-                style={{ ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box' }}
-              >Sækja alla hringi</button>
-            </div>
-          </div>
-        </div>
+        <RoundsScreen
+          theme={theme} rounds={rounds}
+          expandedRound={expandedRound} setExpandedRound={setExpandedRound}
+          selectedRounds={selectedRounds} toggleRoundSel={toggleRoundSel}
+          exportRound={exportRound} deleteRound={deleteRound}
+          copyAIPrompt={copyAIPrompt} exportAllData={exportAllData}
+          onClose={() => setShowRounds(false)}
+        />
       )}
 
-      {/* SETTINGS SCREEN OVERLAY — sits above the scorecard */}
       {showSettings && (
-        <div style={{ position: 'absolute', inset: 0, backgroundColor: theme.scBg, zIndex: 10000, display: 'flex', flexDirection: 'column', color: theme.scText }}>
-          <div style={{ padding: 'max(env(safe-area-inset-top), 20px) 20px 20px', background: theme.darkGreen, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
-            <div />
-            <h2 style={{ margin: 0, color: 'white', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: '900', justifySelf: 'center' }}>Stillingar</h2>
-            <div onClick={() => setShowSettings(false)} title="Loka" style={{ cursor: 'pointer', color: 'white', opacity: 0.85, display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
-              <X size={24} />
-            </div>
-          </div>
-
-          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px' }}>
-              <SettingRow label="Telja pútt" checked={trackPutts} onChange={setTrackPutts} theme={theme} />
-              <SettingRow label="Telja leik" checked={trackGame} onChange={setTrackGame} theme={theme} />
-              <SettingRow label="Telja skot" checked={trackScore} onChange={setTrackScore} theme={theme} />
-              <SettingRow label="Dökkur hamur" checked={darkMode} onChange={setDarkMode} theme={theme} />
-              <SettingRow label="Fleiri tölur" checked={!simpleView} onChange={(v) => setSimpleView(!v)} theme={theme} />
-              <SettingRow label="Kaddí" checked={showClubRec} onChange={setShowClubRec} theme={theme} />
-              <SettingRow label="Skrá gögn sjálfur" checked={statSheet} onChange={setStatSheet} theme={theme} />
-              <SettingRow label="Snjallskrá" checked={snjallskra} onChange={setSnjallskra} theme={theme} />
-              {/* Handicap is typed in — GolfBox is cross-origin, unreadable from here */}
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
-                padding: '13px 12px', border: `1px solid ${theme.scLine}`, borderRadius: theme.radius
-              }}>
-                <span style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>Forgjöf</span>
-                <input
-                  type="text" inputMode="decimal" value={handicap}
-                  onChange={(e) => setHandicap(e.target.value)} placeholder="t.d. 23,4"
-                  style={{
-                    width: '90px', padding: '8px', borderRadius: theme.radius, border: `1px solid ${theme.scLine}`,
-                    background: 'transparent', color: theme.scText, fontSize: '1rem', textAlign: 'center',
-                    boxSizing: 'border-box', outline: 'none', fontFamily: theme.sans
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* The bag lives behind settings; its overlay sits above this screen */}
-            <button onClick={() => setShowBag(true)} style={{
-              ...actionBtnStyle, flex: 'none', display: 'block', width: '100%', boxSizing: 'border-box',
-              marginTop: '28px', marginBottom: 'calc(env(safe-area-inset-bottom, 20px) + 20px)'
-            }}>Opna pokann</button>
-          </div>
-        </div>
-      )}
-
-      {/* POST-HOLE STAT SHEET — slides up over the map; buttons only, all optional */}
-      {sheetHole !== null && (
-        <div onClick={skipSheet} style={{ position: 'absolute', inset: 0, zIndex: 20000, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-          {/* Tapping the course (outside the box) closes the sheet, same as Loka */}
-          <div onClick={(e) => e.stopPropagation()} style={{
-            ...cardStyle, borderRadius: `${theme.radius} ${theme.radius} 0 0`,
-            padding: '14px 16px calc(env(safe-area-inset-bottom, 12px) + 12px)',
-            animation: 'sheetUp 0.22s ease-out'
-          }}>
-            <div style={{ ...microLabel, fontSize: '0.62rem', marginBottom: '12px' }}>
-              Hola {courseData[sheetHole].hole} · Par {courseData[sheetHole].par}
-            </div>
-            {courseData[sheetHole].par > 3
-              ? sheetGroup('Teighögg', 'tee', [
-                  { v: 'left', l: '← Vinstri' }, { v: 'hit', l: 'Braut' }, { v: 'right', l: 'Hægri →' }, { v: 'whiff', l: '↓', t: 'Vindhögg' },
-                ])
-              : sheetGroup('Á flöt?', 'green', [
-                  { v: 'short', l: 'Stutt' }, { v: 'left', l: 'Vinstri' }, { v: 'hit', l: 'Hitt' }, { v: 'right', l: 'Hægri' }, { v: 'long', l: 'Löng' },
-                ])}
-            {sheetGroup('Glompuhögg', 'bunker', [{ v: 0, l: '0' }, { v: 1, l: '1' }, { v: 2, l: '2+' }])}
-            {sheetGroup('Víti', 'penalty', [{ v: 0, l: '0' }, { v: 1, l: '1' }, { v: 2, l: '2+' }])}
-            {sheetGroup('Fyrsta pútt', 'firstPutt', [{ v: '<1', l: '<1m' }, { v: '1-3', l: '1–3m' }, { v: '3-10', l: '3–10m' }, { v: '10+', l: '10m+' }])}
-            <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
-              <div onClick={skipSheet} style={{ ...sheetOptStyle(false), padding: '12px 2px', fontSize: '0.8rem' }}>Loka</div>
-              <div onClick={saveSheet} style={{ ...sheetOptStyle(true), padding: '12px 2px', fontSize: '0.8rem' }}>Vista</div>
-            </div>
-          </div>
-        </div>
+        <SettingsScreen
+          theme={theme}
+          trackScore={trackScore} setTrackScore={setTrackScore}
+          trackPutts={trackPutts} setTrackPutts={setTrackPutts}
+          trackGame={trackGame} setTrackGame={setTrackGame}
+          darkMode={darkMode} setDarkMode={setDarkMode}
+          simpleView={simpleView} setSimpleView={setSimpleView}
+          showClubRec={showClubRec} setShowClubRec={setShowClubRec}
+          statSheet={statSheet} setStatSheet={setStatSheet}
+          snjallskra={snjallskra} setSnjallskra={setSnjallskra}
+          handicap={handicap} setHandicap={setHandicap}
+          onOpenBag={() => setShowBag(true)}
+          onClose={() => setShowSettings(false)}
+        />
       )}
 
       {/* EASTER EGG */}
