@@ -14,9 +14,13 @@
     <meta name="apple-mobile-web-app-title" content="Mosgolf" />
     <link rel="apple-touch-icon" href="/local-golf-app/golfmos.png" />
     <link rel="icon" type="image/png" href="/local-golf-app/golfmos.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- NO viewport-fit=cover: that draws edge-to-edge UNDER the Android system
+         bars, and the 3-button nav bar isn't reported via env(safe-area-inset-*),
+         so it covered our bottom controls. Default keeps the app in the safe area
+         with the nav bar in its own space below. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Mosgolf</title>
-    <script type="module" crossorigin src="/local-golf-app/assets/index-BuJGHJZN.js"></script>
+    <script type="module" crossorigin src="/local-golf-app/assets/index-c8ljB0Kv.js"></script>
     <link rel="stylesheet" crossorigin href="/local-golf-app/assets/index-DBth7dPd.css">
   </head>
   <body>
